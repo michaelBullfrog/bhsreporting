@@ -1,0 +1,184 @@
+from sqlalchemy import func, case
+from sqlalchemy.orm import Session
+from ..models import Interaction, InteractionLeg
+
+def overview(db: Session, from_ms: int | None = None, to_ms: int | None = None):
+    q = db.query(Interaction)
+    if from_ms is not None:
+        q = q.filter(Interaction.created_time >= from_ms)
+    if to_ms is not None:
+        q = q.filter(Interaction.created_time < to_ms)
+
+    total = q.count()
+    inbound = q.filter(Interaction.direction == "inbound").count()
+    outbound = q.filter(Interaction.direction == "outdial").count()
+    answered = q.filter(Interaction.connected_count > 0).count()
+    abandoned = q.filter(Interaction.termination_type == "abandoned").count()
+    callbacks = q.filter(Interaction.callback_status == "Success").count()
+
+    avg_queue_ms = q.with_entities(func.avg(Interaction.queue_duration)).scalar() or 0
+    max_queue_ms = q.with_entities(func.max(Interaction.queue_duration)).scalar() or 0
+
+    return {
+        "total_interactions": total,
+        "inbound": inbound,
+        "outdial": outbound,
+        "answered": answered,
+        "abandoned": abandoned,
+        "successful_native_callbacks": callbacks,
+        "answer_rate": round(answered / inbound * 100, 2) if inbound else 0,
+        "abandon_rate": round(abandoned / inbound * 100, 2) if inbound else 0,
+        "avg_queue_seconds": round(float(avg_queue_ms) / 1000, 2),
+        "max_queue_seconds": round(float(max_queue_ms) / 1000, 2),
+    }
+
+def agent_summary(db: Session, from_ms: int | None = None, to_ms: int | None = None):
+    q = db.query(
+        InteractionLeg.agent_name,
+        func.count(InteractionLeg.leg_id).label("legs"),
+        func.sum(InteractionLeg.connected_duration).label("connected_ms"),
+        func.sum(InteractionLeg.ringing_duration).label("ringing_ms"),
+        func.sum(InteractionLeg.wrapup_duration).label("wrapup_ms"),
+        func.sum(InteractionLeg.hold_duration).label("hold_ms"),
+    ).filter(InteractionLeg.agent_name.isnot(None))
+
+    if from_ms is not None:
+        q = q.filter(InteractionLeg.created_time >= from_ms)
+    if to_ms is not None:
+        q = q.filter(InteractionLeg.created_time < to_ms)
+
+    q = q.group_by(InteractionLeg.agent_name).order_by(func.sum(InteractionLeg.connected_duration).desc())
+
+    rows = []
+    for r in q.all():
+        rows.append({
+            "agent_name": r.agent_name,
+            "legs": r.legs,
+            "connected_seconds": round((r.connected_ms or 0) / 1000, 2),
+            "ringing_seconds": round((r.ringing_ms or 0) / 1000, 2),
+            "wrapup_seconds": round((r.wrapup_ms or 0) / 1000, 2),
+            "hold_seconds": round((r.hold_ms or 0) / 1000, 2),
+        })
+    return rows
+
+def staffing_summary(db: Session, from_ms: int | None = None, to_ms: int | None = None):
+    from ..models import AgentSession, AgentStateActivity
+
+    session_q = db.query(
+        AgentSession.agent_id,
+        AgentSession.agent_name,
+        AgentSession.team_name,
+        func.sum(
+            case(
+                (
+                    (AgentSession.end_time.isnot(None)) &
+                    (AgentSession.end_time >= AgentSession.start_time),
+                    AgentSession.end_time - AgentSession.start_time,
+                ),
+                else_=0,
+            )
+        ).label("logged_in_ms"),
+    )
+
+    activity_q = db.query(
+        AgentStateActivity.agent_id,
+        AgentStateActivity.agent_name,
+        AgentStateActivity.team_name,
+        AgentStateActivity.state,
+        AgentStateActivity.state_detail,
+        func.sum(AgentStateActivity.duration_ms).label("duration_ms"),
+    )
+
+    if from_ms is not None:
+        session_q = session_q.filter(AgentSession.start_time >= from_ms)
+        activity_q = activity_q.filter(AgentStateActivity.start_time >= from_ms)
+    if to_ms is not None:
+        session_q = session_q.filter(AgentSession.start_time < to_ms)
+        activity_q = activity_q.filter(AgentStateActivity.start_time < to_ms)
+
+    session_rows = session_q.group_by(
+        AgentSession.agent_id,
+        AgentSession.agent_name,
+        AgentSession.team_name,
+    ).all()
+
+    activity_rows = activity_q.group_by(
+        AgentStateActivity.agent_id,
+        AgentStateActivity.agent_name,
+        AgentStateActivity.team_name,
+        AgentStateActivity.state,
+        AgentStateActivity.state_detail,
+    ).all()
+
+    agents = {}
+    for r in session_rows:
+        key = r.agent_id or r.agent_name
+        agents[key] = {
+            "agent_id": r.agent_id,
+            "agent_name": r.agent_name,
+            "team_name": r.team_name,
+            "logged_in_ms": int(r.logged_in_ms or 0),
+            "available_ms": 0,
+            "idle_ms": 0,
+            "rona_ms": 0,
+            "connected_ms": 0,
+            "wrapup_ms": 0,
+            "ringing_ms": 0,
+            "inbound_reserved_ms": 0,
+            "outdial_reserved_ms": 0,
+        }
+
+    for r in activity_rows:
+        key = r.agent_id or r.agent_name
+        row = agents.setdefault(key, {
+            "agent_id": r.agent_id,
+            "agent_name": r.agent_name,
+            "team_name": r.team_name,
+            "logged_in_ms": 0,
+            "available_ms": 0,
+            "idle_ms": 0,
+            "rona_ms": 0,
+            "connected_ms": 0,
+            "wrapup_ms": 0,
+            "ringing_ms": 0,
+            "inbound_reserved_ms": 0,
+            "outdial_reserved_ms": 0,
+        })
+        ms = int(r.duration_ms or 0)
+        state = (r.state or "").lower()
+        if r.state_detail == "rona":
+            row["rona_ms"] += ms
+        elif state == "available":
+            row["available_ms"] += ms
+        elif state == "idle":
+            row["idle_ms"] += ms
+        elif state == "connected":
+            row["connected_ms"] += ms
+        elif state in {"wrapup", "wrap-up"}:
+            row["wrapup_ms"] += ms
+        elif state == "ringing":
+            row["ringing_ms"] += ms
+        elif state == "inbound-reserved":
+            row["inbound_reserved_ms"] += ms
+        elif state == "outdial-reserved":
+            row["outdial_reserved_ms"] += ms
+
+    output = []
+    for row in agents.values():
+        logged = row["logged_in_ms"]
+        productive = row["connected_ms"] + row["wrapup_ms"]
+        row.update({
+            "logged_in_hours": round(logged / 3_600_000, 2),
+            "available_hours": round(row["available_ms"] / 3_600_000, 2),
+            "idle_hours": round(row["idle_ms"] / 3_600_000, 2),
+            "rona_hours": round(row["rona_ms"] / 3_600_000, 2),
+            "connected_hours": round(row["connected_ms"] / 3_600_000, 2),
+            "wrapup_hours": round(row["wrapup_ms"] / 3_600_000, 2),
+            "ringing_hours": round(row["ringing_ms"] / 3_600_000, 2),
+            "occupancy_percent": round(productive / logged * 100, 2) if logged else 0,
+            "availability_percent": round(row["available_ms"] / logged * 100, 2) if logged else 0,
+        })
+        output.append(row)
+
+    output.sort(key=lambda x: x["logged_in_ms"], reverse=True)
+    return output
