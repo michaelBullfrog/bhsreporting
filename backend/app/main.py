@@ -1,0 +1,4763 @@
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from starlette.middleware.sessions import SessionMiddleware
+from .database import Base, engine
+from .routes.health import router as health_router
+from .routes.collector import router as collector_router
+from .routes.dashboard import router as dashboard_router
+from .routes.auth import router as auth_router
+from .auth_config import get_auth_settings
+from .auth_middleware import WebexAuthMiddleware
+
+Base.metadata.create_all(bind=engine)
+
+app = FastAPI(
+    title="WxCC Analytics",
+    version="8.8.2",
+    description="Render-hosted Contact Center Analytics analytics collector and dashboard.",
+)
+
+auth_settings = get_auth_settings()
+
+# SessionMiddleware is outermost so request.session is available to the
+# WebexAuthMiddleware. Authentication defaults to enabled and fails closed
+# until the required Webex OAuth and authorization settings are configured.
+# Starlette executes the most recently-added middleware outermost.
+# Add WebexAuthMiddleware first, then SessionMiddleware, so SessionMiddleware
+# runs before auth and request.session is available inside the auth middleware.
+app.add_middleware(WebexAuthMiddleware)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=auth_settings.session_secret or "webex-auth-setup-required",
+    max_age=auth_settings.session_hours * 3600,
+    same_site="lax",
+    https_only=True,
+)
+
+app.include_router(auth_router)
+app.include_router(health_router)
+app.include_router(collector_router)
+app.include_router(dashboard_router)
+
+app.mount("/static", StaticFiles(directory="backend/app/static"), name="static")
+
+
+@app.get("/", include_in_schema=False)
+def home():
+    return RedirectResponse(url="/executive-overview", status_code=307)
+
+
+@app.get("/staffing", response_class=HTMLResponse)
+def staffing_page():
+    return r"""
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Agent & Staffing | WxCC Analytics</title>
+  <style>
+    :root {
+      --bg:#f4f7fa;
+      --panel:#ffffff;
+      --ink:#12263a;
+      --muted:#667788;
+      --line:#d8e2ec;
+      --brand:#0a5fa8;
+      --brand-dark:#003f73;
+      --brand-soft:#e8f2fb;
+      --warn:#9a6700;
+      --warn-bg:#fff7dd;
+      --bad:#b42318;
+      --bad-bg:#fff0ee;
+      --shadow:0 7px 24px rgba(0,63,115,.08);
+    }
+
+    * { box-sizing:border-box; }
+    html { background:var(--bg); }
+    body {
+      margin:0;
+      font-family:Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background:var(--bg);
+      color:var(--ink);
+    }
+
+    button, input, select { font:inherit; }
+
+    .topbar {
+      height:66px;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      padding:0 28px;
+      background:#063b66;
+      color:white;
+      position:sticky;
+      top:0;
+      z-index:10;
+      box-shadow:0 2px 12px rgba(0,0,0,.12);
+    }
+
+    .brand { display:flex; align-items:center; gap:12px; }
+    .mark {
+      width:34px; height:34px;
+      display:grid; place-items:center;
+      border-radius:10px;
+      background:#0a6fb9;
+      font-weight:900;
+    }
+    .brand-title { font-weight:800; }
+    .brand-sub { font-size:12px; color:#c9dbea; margin-top:1px; }
+    .top-link { color:#d3e4f2; text-decoration:none; font-size:13px; }.nav{display:flex;gap:15px;flex-wrap:wrap;align-items:center}.nav a{color:#d3e4f2;text-decoration:none;font-size:13px}.nav a.active{color:#fff;font-weight:800}
+
+    .page {
+      max-width:1500px;
+      margin:0 auto;
+      padding:28px;
+    }
+
+    .heading-row {
+      display:flex;
+      justify-content:space-between;
+      align-items:flex-end;
+      gap:18px;
+      margin-bottom:20px;
+      flex-wrap:wrap;
+    }
+
+    h1 { margin:0; font-size:30px; letter-spacing:-.025em; }
+    .subtitle { margin-top:5px; color:var(--muted); font-size:14px; }
+
+    .filters {
+      background:var(--panel);
+      border:1px solid var(--line);
+      border-radius:16px;
+      padding:16px;
+      display:grid;
+      grid-template-columns:minmax(140px,1fr) minmax(140px,1fr) minmax(180px,1fr) minmax(180px,1.25fr) auto;
+      gap:12px;
+      align-items:end;
+      box-shadow:var(--shadow);
+      margin-bottom:18px;
+    }
+
+    .field label {
+      display:block;
+      font-size:11px;
+      text-transform:uppercase;
+      letter-spacing:.07em;
+      font-weight:800;
+      color:var(--muted);
+      margin-bottom:6px;
+    }
+
+    .field input, .field select {
+      width:100%;
+      height:40px;
+      border:1px solid #cfdad4;
+      border-radius:10px;
+      background:white;
+      padding:0 11px;
+      color:var(--ink);
+      outline:none;
+    }
+
+    .field input:focus, .field select:focus {
+      border-color:#64a981;
+      box-shadow:0 0 0 3px rgba(31,122,76,.10);
+    }
+
+    .apply {
+      height:40px;
+      border:0;
+      border-radius:10px;
+      padding:0 18px;
+      font-weight:800;
+      color:white;
+      background:var(--brand);
+      cursor:pointer;
+    }
+    .apply:hover { background:var(--brand-dark); }
+
+    .kpis {
+      display:grid;
+      grid-template-columns:repeat(7,minmax(125px,1fr));
+      gap:12px;
+      margin-bottom:18px;
+    }
+
+    .kpi {
+      background:var(--panel);
+      border:1px solid var(--line);
+      border-radius:15px;
+      padding:17px;
+      box-shadow:var(--shadow);
+      min-width:0;
+    }
+    .kpi-label {
+      font-size:11px;
+      color:var(--muted);
+      text-transform:uppercase;
+      letter-spacing:.06em;
+      font-weight:800;
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+    }
+    .kpi-value {
+      margin-top:7px;
+      font-size:25px;
+      line-height:1;
+      font-weight:850;
+      letter-spacing:-.03em;
+    }
+    .kpi-foot {
+      margin-top:7px;
+      color:var(--muted);
+      font-size:11px;
+    }
+
+    .panel {
+      background:var(--panel);
+      border:1px solid var(--line);
+      border-radius:17px;
+      box-shadow:var(--shadow);
+      overflow:hidden;
+    }
+
+    .panel-head {
+      min-height:60px;
+      padding:14px 18px;
+      border-bottom:1px solid var(--line);
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:14px;
+      flex-wrap:wrap;
+    }
+
+    .panel-title { font-size:16px; font-weight:850; }
+    .panel-meta { color:var(--muted); font-size:12px; margin-top:2px; }
+
+    .legend {
+      display:flex;
+      align-items:center;
+      gap:14px;
+      flex-wrap:wrap;
+      color:var(--muted);
+      font-size:11px;
+    }
+
+    .dot {
+      display:inline-block;
+      width:8px; height:8px;
+      border-radius:50%;
+      background:var(--brand);
+      margin-right:5px;
+    }
+    .dot.warn { background:#d49a24; }
+
+    .table-wrap { overflow:auto; max-height:calc(100vh - 360px); }
+
+    table {
+      width:100%;
+      min-width:1250px;
+      border-collapse:separate;
+      border-spacing:0;
+      font-size:13px;
+    }
+
+    th {
+      position:sticky;
+      top:0;
+      background:#f7f9f8;
+      z-index:2;
+      text-align:right;
+      padding:12px 12px;
+      color:#536159;
+      font-size:10px;
+      text-transform:uppercase;
+      letter-spacing:.055em;
+      border-bottom:1px solid var(--line);
+      cursor:pointer;
+      user-select:none;
+      white-space:nowrap;
+    }
+
+    th:first-child, th:nth-child(2) { text-align:left; }
+
+    td {
+      text-align:right;
+      padding:12px;
+      border-bottom:1px solid #edf1ef;
+      white-space:nowrap;
+      font-variant-numeric:tabular-nums;
+    }
+
+    td:first-child, td:nth-child(2) { text-align:left; }
+    tbody tr:hover { background:#f8fbf9; }
+    tbody tr:last-child td { border-bottom:0; }
+
+    .agent { font-weight:780; }
+    .team { color:var(--muted); }
+
+    .pill {
+      display:inline-flex;
+      align-items:center;
+      border-radius:999px;
+      padding:4px 8px;
+      font-size:10px;
+      font-weight:800;
+    }
+    .pill.good { background:var(--brand-soft); color:var(--brand-dark); }
+    .pill.warn { background:var(--warn-bg); color:var(--warn); }
+
+    .metric-bar {
+      display:inline-flex;
+      align-items:center;
+      gap:7px;
+      min-width:86px;
+      justify-content:flex-end;
+    }
+    .bar {
+      width:38px; height:5px; border-radius:99px;
+      background:#e7eeea; overflow:hidden;
+    }
+    .bar > span {
+      display:block; height:100%;
+      background:var(--brand);
+      border-radius:99px;
+    }
+
+    .empty, .error {
+      padding:42px 24px;
+      text-align:center;
+      color:var(--muted);
+    }
+    .error { color:var(--bad); background:var(--bad-bg); }
+
+    .loading {
+      opacity:.58;
+      pointer-events:none;
+    }
+
+    .info-btn {
+      height:38px;
+      border:1px solid #bfd4c7;
+      border-radius:10px;
+      padding:0 13px;
+      background:#ffffff;
+      color:var(--brand-dark);
+      font-weight:800;
+      cursor:pointer;
+      box-shadow:0 2px 8px rgba(20,55,39,.04);
+    }
+
+    .info-btn:hover {
+      background:var(--brand-soft);
+    }
+
+    .modal-backdrop {
+      position:fixed;
+      inset:0;
+      background:rgba(15,28,22,.48);
+      display:none;
+      align-items:center;
+      justify-content:center;
+      padding:24px;
+      z-index:50;
+    }
+
+    .modal-backdrop.open {
+      display:flex;
+    }
+
+    .modal-card {
+      width:min(760px,100%);
+      max-height:86vh;
+      overflow:auto;
+      background:white;
+      border-radius:20px;
+      border:1px solid var(--line);
+      box-shadow:0 24px 70px rgba(0,0,0,.24);
+    }
+
+    .modal-head {
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:16px;
+      padding:20px 22px 16px;
+      border-bottom:1px solid var(--line);
+      position:sticky;
+      top:0;
+      background:white;
+      z-index:2;
+    }
+
+    .modal-title {
+      font-size:19px;
+      font-weight:850;
+    }
+
+    .modal-close {
+      width:34px;
+      height:34px;
+      border:0;
+      border-radius:9px;
+      background:#f1f5f3;
+      color:var(--ink);
+      font-size:20px;
+      cursor:pointer;
+    }
+
+    .metric-defs {
+      padding:8px 22px 22px;
+    }
+
+    .metric-def {
+      padding:15px 0;
+      border-bottom:1px solid #edf1ef;
+    }
+
+    .metric-def:last-child {
+      border-bottom:0;
+    }
+
+    .metric-def strong {
+      display:block;
+      font-size:14px;
+      margin-bottom:4px;
+    }
+
+    .metric-def p {
+      margin:0;
+      color:var(--muted);
+      font-size:13px;
+      line-height:1.55;
+    }
+
+    .metric-formula {
+      display:inline-block;
+      margin-top:6px;
+      padding:5px 8px;
+      border-radius:8px;
+      background:#f4f7f6;
+      color:#405047;
+      font-size:12px;
+      font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+
+    @media (max-width:1200px) {
+      .kpis { grid-template-columns:repeat(4,1fr); }
+      .filters { grid-template-columns:repeat(2,1fr); }
+      .filters .apply { width:100%; }
+    }
+
+    @media (max-width:700px) {
+      .page { padding:18px 12px; }
+      .topbar { padding:0 14px; }
+      .kpis { grid-template-columns:repeat(2,1fr); }
+      .filters { grid-template-columns:1fr; }
+      h1 { font-size:25px; }
+    }
+  .bhs-logo-wrap{margin-left:12px;background:#fff;border-radius:8px;padding:4px 8px;display:flex;align-items:center;justify-content:center;flex:0 0 auto;min-height:46px}.bhs-header-logo{display:block;height:40px;width:auto;max-width:118px;object-fit:contain}@media(max-width:700px){.bhs-logo-wrap{margin-left:auto;padding:3px 6px;min-height:40px}.bhs-header-logo{height:34px;max-width:94px}}.health-strip{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin-bottom:14px;box-shadow:var(--shadow)}.health-left{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.health-dot{width:9px;height:9px;border-radius:50%;display:inline-block}.health-healthy{background:#2e8b57}.health-delayed{background:#d59b00}.health-stale{background:#c0392b}.health-error{background:#c0392b}.health-no_runs{background:#8a98a6}.health-no_data{background:#8a98a6}.health-label{font-size:12px;font-weight:850}.health-meta{font-size:11px;color:var(--muted)}
+/* =========================
+   V8.7.0 Modern UI Refresh
+   Presentation-only overrides
+   ========================= */
+:root{
+  --surface:#ffffff;
+  --surface-soft:rgba(255,255,255,.72);
+  --surface-tint:#f8fbfd;
+  --navy:#07395f;
+  --navy-2:#0b4e7f;
+  --blue:#0b6fb8;
+  --blue-soft:#eaf5fc;
+  --steel:#e7edf2;
+  --text:#14283a;
+  --muted-2:#718294;
+  --radius-lg:22px;
+  --radius-md:16px;
+  --shadow-soft:0 14px 34px rgba(11,55,88,.07);
+  --shadow-hover:0 18px 42px rgba(11,55,88,.12);
+}
+body{
+  background:
+    radial-gradient(circle at 5% 0%, rgba(11,111,184,.08), transparent 28rem),
+    linear-gradient(180deg,#f8fbfd 0%,#f3f7fa 100%);
+  color:var(--text);
+}
+.topbar{
+  height:72px;
+  padding:0 30px;
+  background:linear-gradient(100deg,#062f51 0%,#074b79 100%);
+  box-shadow:0 8px 28px rgba(4,44,75,.16);
+  border-bottom:1px solid rgba(255,255,255,.08);
+  backdrop-filter:blur(14px);
+}
+.brand-title{font-size:15px;letter-spacing:.01em}
+.brand-sub{color:#c8dbea;letter-spacing:.02em}
+.nav{
+  gap:6px;
+  padding:5px;
+  border:1px solid rgba(255,255,255,.10);
+  background:rgba(255,255,255,.06);
+  border-radius:999px;
+}
+.nav a{
+  padding:8px 12px;
+  border-radius:999px;
+  color:#d9e9f5;
+  transition:background .18s ease,color .18s ease,transform .18s ease;
+}
+.nav a:hover{
+  background:rgba(255,255,255,.10);
+  color:#fff;
+  transform:translateY(-1px);
+}
+.nav a.active{
+  color:#07395f;
+  background:#fff;
+  box-shadow:0 5px 14px rgba(0,0,0,.10);
+  font-weight:850;
+}
+.bhs-logo-wrap{
+  border-radius:12px;
+  border:1px solid rgba(255,255,255,.22);
+  box-shadow:0 5px 14px rgba(0,0,0,.10);
+}
+.page{
+  max-width:1540px;
+  padding:34px 34px 46px;
+}
+.heading-row{
+  align-items:center;
+  padding:4px 2px 6px;
+  margin-bottom:18px;
+}
+h1{
+  font-size:32px;
+  line-height:1.15;
+  letter-spacing:-.035em;
+  color:#10283b;
+}
+.subtitle{
+  font-size:14px;
+  margin-top:8px;
+  color:#65798a;
+}
+.policy{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  margin-top:10px;
+  padding:6px 10px;
+  border-radius:999px;
+  background:rgba(11,111,184,.07);
+  color:#527086;
+}
+.health-strip{
+  border:0;
+  border-radius:999px;
+  background:rgba(255,255,255,.82);
+  box-shadow:none;
+  padding:10px 16px;
+  border:1px solid rgba(109,139,162,.16);
+  backdrop-filter:blur(12px);
+}
+.health-dot{
+  box-shadow:0 0 0 4px rgba(46,139,87,.08);
+}
+.filters{
+  border:0;
+  border-radius:18px;
+  padding:12px;
+  gap:10px;
+  background:rgba(255,255,255,.78);
+  box-shadow:0 8px 24px rgba(9,57,91,.06);
+  backdrop-filter:blur(14px);
+  border:1px solid rgba(99,134,160,.14);
+}
+.field label{
+  margin:0 0 5px 4px;
+  font-size:10px;
+  letter-spacing:.10em;
+}
+input,select{
+  min-height:42px;
+  border:1px solid #dce6ed;
+  border-radius:12px;
+  background:#fbfdff;
+  box-shadow:inset 0 1px 2px rgba(16,40,59,.03);
+}
+input:focus,select:focus{
+  border-color:#8fc4e8;
+  box-shadow:0 0 0 4px rgba(11,111,184,.08);
+}
+.btn,.apply,.info-btn{
+  border-radius:12px;
+  box-shadow:0 7px 16px rgba(11,111,184,.14);
+  transition:transform .18s ease,box-shadow .18s ease,filter .18s ease;
+}
+.btn:hover,.apply:hover,.info-btn:hover{
+  transform:translateY(-1px);
+  box-shadow:0 10px 22px rgba(11,111,184,.18);
+}
+.kpis{
+  gap:10px;
+  margin:22px 0 28px;
+}
+.kpi{
+  position:relative;
+  overflow:hidden;
+  border:0;
+  border-radius:18px;
+  padding:17px 16px 16px;
+  background:rgba(255,255,255,.82);
+  box-shadow:none;
+  border:1px solid rgba(104,137,160,.12);
+  transition:transform .18s ease,box-shadow .18s ease,background .18s ease;
+}
+.kpi:before{
+  content:"";
+  position:absolute;
+  left:0;
+  top:0;
+  bottom:0;
+  width:3px;
+  background:linear-gradient(180deg,#0b6fb8,#65b7e8);
+  opacity:.85;
+}
+.kpi:hover{
+  transform:translateY(-2px);
+  background:#fff;
+  box-shadow:var(--shadow-soft);
+}
+.kpi-label{
+  font-size:10px;
+  letter-spacing:.09em;
+  color:#708293;
+}
+.kpi-value{
+  font-size:29px;
+  letter-spacing:-.035em;
+  margin-top:9px;
+  color:#102b40;
+}
+.kpi-foot{
+  margin-top:5px;
+  line-height:1.35;
+  color:#80909d;
+}
+.grid,.grid2{
+  gap:22px;
+  margin-bottom:26px;
+}
+.panel{
+  border:0;
+  border-radius:var(--radius-lg);
+  background:rgba(255,255,255,.74);
+  box-shadow:none;
+  overflow:hidden;
+  border:1px solid rgba(100,135,160,.10);
+  backdrop-filter:blur(12px);
+  transition:box-shadow .18s ease,background .18s ease;
+}
+.panel:hover{
+  background:rgba(255,255,255,.88);
+  box-shadow:0 14px 36px rgba(8,55,89,.055);
+}
+.panel-head{
+  border-bottom:0;
+  padding:20px 22px 10px;
+  align-items:flex-start;
+}
+.panel-title{
+  font-size:16px;
+  letter-spacing:-.015em;
+  color:#173247;
+}
+.panel-title:after{
+  content:"";
+  display:block;
+  width:32px;
+  height:3px;
+  margin-top:9px;
+  border-radius:999px;
+  background:linear-gradient(90deg,#0b6fb8,#6cbce9);
+}
+.panel-meta{
+  margin-top:5px;
+  color:#7c8e9d;
+}
+.panel-body{
+  padding:14px 22px 22px;
+}
+.attention,.staffing-grid{
+  gap:10px;
+}
+.attention-card,.stat,.compare-card,.hour-card,.insight{
+  border:0;
+  border-radius:15px;
+  background:linear-gradient(180deg,#fbfdff,#f7fafc);
+  box-shadow:inset 0 0 0 1px rgba(107,139,160,.10);
+}
+.attention-card,.stat{
+  padding:14px;
+}
+.attention-card:hover,.stat:hover,.compare-card:hover,.hour-card:hover,.insight:hover{
+  background:#fff;
+}
+.attention-label,.stat-name{
+  color:#738696;
+}
+.attention-value,.stat-value{
+  color:#123047;
+  letter-spacing:-.025em;
+}
+.summary-row{
+  padding:11px 0;
+  border-bottom:1px solid rgba(116,144,164,.12);
+}
+.summary-row span{color:#718594}
+.summary-row strong{color:#18364c}
+.table-wrap,.queue-wrap,.heatmap-wrap{
+  border-radius:16px;
+  overflow:auto;
+}
+table{
+  border-collapse:separate;
+  border-spacing:0;
+}
+th{
+  background:#f4f8fb;
+  color:#5f7485;
+  font-size:10px;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+}
+th,td{
+  border-color:rgba(113,143,165,.12)!important;
+}
+tbody tr{
+  transition:background .14s ease;
+}
+tbody tr:hover{
+  background:#f7fbfe;
+}
+.pill{
+  border-radius:999px;
+  border:0;
+  background:#eef5fa;
+  color:#47677e;
+}
+.note,.flag,.warning{
+  border:0;
+  border-radius:14px;
+  box-shadow:inset 0 0 0 1px rgba(117,145,164,.10);
+}
+.barwrap,.trend-track{
+  border-radius:999px;
+  background:#eaf0f4;
+  overflow:hidden;
+}
+.bar,.trend-fill{
+  border-radius:999px;
+}
+.modal-card{
+  border-radius:22px;
+  box-shadow:0 28px 70px rgba(4,37,62,.22);
+}
+@media(max-width:1100px){
+  .nav{border-radius:18px}
+}
+@media(max-width:700px){
+  .page{padding:22px 16px 36px}
+  h1{font-size:27px}
+  .health-strip{border-radius:16px}
+  .filters{border-radius:16px}
+  .kpi{border-radius:16px}
+  .panel{border-radius:18px}
+}
+
+</style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      
+      <div>
+        <div class="brand-title">BHS Corrugated</div>
+        <div class="brand-sub">Contact Center Analytics</div>
+      </div>
+    </div>
+    <nav class="nav"><a href="/executive-overview">Executive</a><a class="active" href="/staffing">Staffing</a><a href="/call-demand">Call Demand</a><a href="/service-sla">Service / SLA</a><a href="/missed-callbacks">Missed & Callbacks</a><a href="/inbound-outbound">Call Activity</a><a href="/auth/logout">Sign out</a></nav><div class="bhs-logo-wrap"><img class="bhs-header-logo" src="/static/bhs_logo.png" alt="BHS Corrugated logo"></div>
+  </header>
+
+  <main class="page" id="page">
+    <div class="heading-row">
+      <div>
+        <h1>Agent & Staffing</h1>
+        <div class="subtitle">Login coverage, agent states, utilization, occupancy and RONA performance.</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+        <button class="info-btn" id="metricInfoBtn" type="button">ⓘ Metric Definitions</button>
+        <div class="subtitle" id="version">Loading backend…</div>
+      </div>
+    </div>
+
+    <section class="filters">
+      <div class="field">
+        <label for="fromDate">From</label>
+        <input id="fromDate" type="date">
+      </div>
+      <div class="field">
+        <label for="toDate">Through</label>
+        <input id="toDate" type="date">
+      </div>
+      <div class="field">
+        <label for="teamFilter">Team</label>
+        <select id="teamFilter">
+          <option value="">All teams</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="agentSearch">Agent Search</label>
+        <input id="agentSearch" type="search" placeholder="Search agent name…">
+      </div>
+      <div class="field"><label for="queueFilter">Queue</label><select id="queueFilter"><option value="">All queues</option></select></div>
+    <button class="apply" id="applyBtn">Apply</button>
+    </section>
+
+    <section class="kpis">
+      <div class="kpi">
+        <div class="kpi-label">Agents</div>
+        <div class="kpi-value" id="kpiAgents">—</div>
+        <div class="kpi-foot">in current view</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Logged In</div>
+        <div class="kpi-value" id="kpiLogged">—</div>
+        <div class="kpi-foot">total agent hours</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Available</div>
+        <div class="kpi-value" id="kpiAvailable">—</div>
+        <div class="kpi-foot">total available hours</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Idle / Not Ready</div>
+        <div class="kpi-value" id="kpiIdle">—</div>
+        <div class="kpi-foot">total idle hours</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Utilization</div>
+        <div class="kpi-value" id="kpiUtil">—</div>
+        <div class="kpi-foot">weighted by login time</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Occupancy</div>
+        <div class="kpi-value" id="kpiOcc">—</div>
+        <div class="kpi-foot">available + active work</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">RONA Events</div>
+        <div class="kpi-value" id="kpiRona">—</div>
+        <div class="kpi-foot" id="kpiComplete">—</div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <div class="panel-title">Agent Detail</div>
+          <div class="panel-meta" id="resultMeta">Loading staffing data…</div>
+        </div>
+        <div class="legend">
+          <span><i class="dot"></i>Complete data</span>
+          <span><i class="dot warn"></i>Needs review</span>
+          <span>Click column headers to sort</span>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th data-sort="agent_name">Agent</th>
+              <th data-sort="team_name">Team</th>
+              <th data-sort="logged_in_hours">Logged In</th>
+              <th data-sort="available_hours">Available</th>
+              <th data-sort="idle_hours">Idle</th>
+              <th data-sort="connected_hours">Talk</th>
+              <th data-sort="wrapup_hours">ACW</th>
+              <th data-sort="rona_events">RONA</th>
+              <th data-sort="availability_percent">Availability</th>
+              <th data-sort="utilization_percent">Utilization</th>
+              <th data-sort="occupancy_percent">Occupancy</th>
+              <th data-sort="accounted_percent">Data Quality</th>
+            </tr>
+          </thead>
+          <tbody id="tbody"></tbody>
+        </table>
+        <div id="message"></div>
+      </div>
+    </section>
+  </main>
+
+  <div class="modal-backdrop" id="metricModal" aria-hidden="true">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="metricModalTitle">
+      <div class="modal-head">
+        <div>
+          <div class="modal-title" id="metricModalTitle">Metric Definitions</div>
+          <div class="subtitle">How to interpret Agent & Staffing metrics.</div>
+        </div>
+        <button class="modal-close" id="metricModalClose" type="button" aria-label="Close">×</button>
+      </div>
+
+      <div class="metric-defs">
+        <div class="metric-def">
+          <strong>Logged In</strong>
+          <p>Total time the agent was logged into Contact Center Analytics during the selected reporting window.</p>
+        </div>
+
+        <div class="metric-def">
+          <strong>Available</strong>
+          <p>Time the agent was ready and available to receive queue work.</p>
+        </div>
+
+        <div class="metric-def">
+          <strong>Idle / Not Ready</strong>
+          <p>Time the agent was logged in but not available to receive queue work.</p>
+        </div>
+
+        <div class="metric-def">
+          <strong>Talk</strong>
+          <p>Time actively connected to customer interactions.</p>
+        </div>
+
+        <div class="metric-def">
+          <strong>ACW</strong>
+          <p>After Call Work / wrap-up time spent completing work after an interaction.</p>
+        </div>
+
+        <div class="metric-def">
+          <strong>RONA Events</strong>
+          <p>Number of explicit not-responding events recorded by Contact Center Analytics when an interaction was offered and the agent did not respond.</p>
+        </div>
+
+        <div class="metric-def">
+          <strong>Availability %</strong>
+          <p>Shows how much of the agent's logged-in time was spent available for queue work.</p>
+          <span class="metric-formula">Available ÷ Logged In</span>
+        </div>
+
+        <div class="metric-def">
+          <strong>Utilization %</strong>
+          <p>Shows how much of the agent's entire logged-in time was spent actively handling customer work or completing after-call work.</p>
+          <span class="metric-formula">(Talk + ACW) ÷ Logged In</span>
+        </div>
+
+        <div class="metric-def">
+          <strong>Occupancy %</strong>
+          <p>Shows how busy the agent was during time they were actually eligible for queue work. Idle / Not Ready time is excluded from the denominator.</p>
+          <span class="metric-formula">(Talk + ACW) ÷ (Available + Talk + ACW)</span>
+        </div>
+
+        <div class="metric-def">
+          <strong>Data Quality</strong>
+          <p>Indicates whether enough agent-state activity was captured to trust the staffing calculations. Complete means at least 99% of logged-in time is accounted for.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+async function loadQueueOptions(){
+  const sel=$('queueFilter');
+  if(!sel)return;
+  const previous=sel.value;
+  const p=new URLSearchParams();
+  let f=null,t=null;
+  if(typeof localStart==='function'){f=localStart($('fromDate').value);t=localAfter($('toDate').value);}
+  else if(typeof localDayStartMs==='function'){f=localDayStartMs($('fromDate').value);t=localDayAfterMs($('toDate').value);}
+  if(f!==null)p.set('from_ms',f);
+  if(t!==null)p.set('to_ms',t);
+  try{
+    const r=await fetch('/api/dashboard/queues?'+p.toString());
+    if(!r.ok)throw new Error(`HTTP ${r.status}`);
+    const d=await r.json();
+    sel.innerHTML='<option value="">All queues</option>'+(d.queues||[]).map(q=>`<option value="${String(q).replaceAll('"','&quot;')}">${q}</option>`).join('');
+    if([...sel.options].some(o=>o.value===previous))sel.value=previous;
+  }catch(e){console.warn('Queue list failed',e)}
+}
+
+  let rawRows = [];
+  let sortKey = 'logged_in_hours';
+  let sortDir = -1;
+
+  const $ = id => document.getElementById(id);
+
+  async function refreshFreshData(){
+    try{
+      const r=await fetch('/api/collector/refresh?lookback_minutes=120&min_interval_minutes=5',{method:'POST'});
+      if(!r.ok)throw new Error(`HTTP ${r.status}`);
+      return await r.json();
+    }catch(e){console.warn('Fresh data pull failed',e);return null}
+  }
+  async function loadHealthStatus(){
+    try{
+      const r=await fetch('/api/dashboard/health-status');
+      if(!r.ok)throw new Error(`HTTP ${r.status}`);
+      return await r.json();
+    }catch(e){console.warn('Health status failed',e);return null}
+  }
+  const fmtHours = n => {
+    const value = Number(n || 0);
+    if (value > 0 && value < 0.01) return '<0.01h';
+    return `${value.toFixed(2)}h`;
+  };
+  const fmtPct = n => `${Number(n || 0).toFixed(2)}%`;
+  const escapeHtml = value => String(value ?? '')
+    .replaceAll('&','&amp;')
+    .replaceAll('<','&lt;')
+    .replaceAll('>','&gt;')
+    .replaceAll('"','&quot;')
+    .replaceAll("'","&#039;");
+
+  function localDayStartMs(dateText) {
+    if (!dateText) return null;
+    const [y,m,d] = dateText.split('-').map(Number);
+    return new Date(y, m - 1, d, 0, 0, 0, 0).getTime();
+  }
+
+  function localDayAfterMs(dateText) {
+    if (!dateText) return null;
+    const [y,m,d] = dateText.split('-').map(Number);
+    return new Date(y, m - 1, d + 1, 0, 0, 0, 0).getTime();
+  }
+
+  function setDefaults() {
+    const now = new Date();
+    const from = new Date(now);
+    from.setDate(now.getDate() - 6);
+
+    const localDate = d => {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    };
+
+    $('fromDate').value = localDate(from);
+    $('toDate').value = localDate(now);
+  }
+
+  function buildUrl() {
+    const params = new URLSearchParams();
+    const from = localDayStartMs($('fromDate').value);
+    const to = localDayAfterMs($('toDate').value);
+
+    if (from !== null) params.set('from_ms', from);
+    if (to !== null) params.set('to_ms', to);
+
+    const qs = params.toString();
+    const qf=$('queueFilter')?.value;if(qf)p.set('queue_name',qf);
+    return '/api/dashboard/staffing' + (qs ? '?' + qs : '');
+  }
+
+  function updateTeamOptions(rows) {
+    const previous = $('teamFilter').value;
+    const teams = [...new Set(rows.map(r => r.team_name).filter(Boolean))].sort();
+    $('teamFilter').innerHTML =
+      '<option value="">All teams</option>' +
+      teams.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
+
+    if (teams.includes(previous)) $('teamFilter').value = previous;
+  }
+
+  function filteredRows() {
+    const team = $('teamFilter').value;
+    const search = $('agentSearch').value.trim().toLowerCase();
+
+    return rawRows.filter(row => {
+      const teamOk = !team || row.team_name === team;
+      const searchOk = !search || String(row.agent_name || '').toLowerCase().includes(search);
+      return teamOk && searchOk;
+    });
+  }
+
+  function weightedPercent(rows, numeratorFields, denominatorFields) {
+    let numerator = 0;
+    let denominator = 0;
+
+    for (const row of rows) {
+      for (const f of numeratorFields) numerator += Number(row[f] || 0);
+      for (const f of denominatorFields) denominator += Number(row[f] || 0);
+    }
+
+    return denominator ? numerator / denominator * 100 : 0;
+  }
+
+  function renderKpis(rows) {
+    const sum = field => rows.reduce((a,r) => a + Number(r[field] || 0), 0);
+    const productiveFields = ['connected_ms','wrapup_ms'];
+
+    $('kpiAgents').textContent = rows.length;
+    $('kpiLogged').textContent = (sum('logged_in_ms') / 3600000).toFixed(1) + 'h';
+    $('kpiAvailable').textContent = (sum('available_ms') / 3600000).toFixed(1) + 'h';
+    $('kpiIdle').textContent = (sum('idle_ms') / 3600000).toFixed(1) + 'h';
+
+    const utilization = weightedPercent(rows, productiveFields, ['logged_in_ms']);
+    const occupancy = weightedPercent(
+      rows,
+      productiveFields,
+      ['available_ms','connected_ms','wrapup_ms']
+    );
+
+    $('kpiUtil').textContent = utilization.toFixed(1) + '%';
+    $('kpiOcc').textContent = occupancy.toFixed(1) + '%';
+    $('kpiRona').textContent = sum('rona_events');
+
+    const complete = rows.filter(r => r.staffing_data_complete).length;
+    $('kpiComplete').textContent = `${complete}/${rows.length} complete`;
+  }
+
+  function metricCell(percent) {
+    const p = Math.max(0, Math.min(Number(percent || 0), 100));
+    return `
+      <span class="metric-bar">
+        <span>${p.toFixed(2)}%</span>
+        <span class="bar"><span style="width:${p}%"></span></span>
+      </span>`;
+  }
+
+  function renderTable(rows) {
+    const body = $('tbody');
+    const message = $('message');
+
+    if (!rows.length) {
+      body.innerHTML = '';
+      message.innerHTML = '<div class="empty">No staffing records match the current filters.</div>';
+      $('resultMeta').textContent = '0 agents';
+      return;
+    }
+
+    message.innerHTML = '';
+
+    const sorted = [...rows].sort((a,b) => {
+      const av = a[sortKey];
+      const bv = b[sortKey];
+
+      if (typeof av === 'string' || typeof bv === 'string') {
+        return String(av ?? '').localeCompare(String(bv ?? '')) * sortDir;
+      }
+      return (Number(av || 0) - Number(bv || 0)) * sortDir;
+    });
+
+    body.innerHTML = sorted.map(row => `
+      <tr>
+        <td class="agent">${escapeHtml(row.agent_name || 'Unknown')}</td>
+        <td class="team">${escapeHtml(row.team_name || '—')}</td>
+        <td>${fmtHours(row.logged_in_hours)}</td>
+        <td>${fmtHours(row.available_hours)}</td>
+        <td>${fmtHours(row.idle_hours)}</td>
+        <td>${fmtHours(row.connected_hours)}</td>
+        <td>${fmtHours(row.wrapup_hours)}</td>
+        <td>${Number(row.rona_events || 0)}</td>
+        <td>${metricCell(row.availability_percent)}</td>
+        <td>${metricCell(row.utilization_percent)}</td>
+        <td>${metricCell(row.occupancy_percent)}</td>
+        <td>
+          <span class="pill ${row.staffing_data_complete ? 'good' : 'warn'}">
+            ${row.staffing_data_complete ? 'Complete' : `${Number(row.accounted_percent || 0).toFixed(1)}%`}
+          </span>
+        </td>
+      </tr>
+    `).join('');
+
+    const teams = new Set(rows.map(r => r.team_name).filter(Boolean));
+    $('resultMeta').textContent = `${rows.length} agents across ${teams.size} teams`;
+  }
+
+  function rerender() {
+    const rows = filteredRows();
+    renderKpis(rows);
+    renderTable(rows);
+  }
+
+  async function loadStaffing() {
+    const page = $('page');
+    page.classList.add('loading');
+    $('message').innerHTML = '';
+    $('resultMeta').textContent = 'Loading staffing data…';
+
+    try {
+      const response = await fetch(buildUrl());
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+      }
+
+      rawRows = await response.json();
+      updateTeamOptions(rawRows);
+      rerender();
+
+      const version = rawRows[0]?.backend_version || 'unknown';
+      $('version').textContent = `Backend v${version}`;
+    } catch (err) {
+      rawRows = [];
+      $('tbody').innerHTML = '';
+      $('message').innerHTML =
+        `<div class="error">Could not load staffing data.<br>${escapeHtml(err.message)}</div>`;
+      $('resultMeta').textContent = 'Load failed';
+    } finally {
+      page.classList.remove('loading');
+    }
+  }
+
+  document.querySelectorAll('th[data-sort]').forEach(th => {
+    th.addEventListener('click', () => {
+      const key = th.dataset.sort;
+      if (sortKey === key) {
+        sortDir *= -1;
+      } else {
+        sortKey = key;
+        sortDir = (key === 'agent_name' || key === 'team_name') ? 1 : -1;
+      }
+      rerender();
+    });
+  });
+
+  $('applyBtn').addEventListener('click', loadStaffing);
+  $('teamFilter').addEventListener('change', rerender);
+  $('agentSearch').addEventListener('input', rerender);
+
+  const metricModal = $('metricModal');
+  $('metricInfoBtn').addEventListener('click', () => {
+    metricModal.classList.add('open');
+    metricModal.setAttribute('aria-hidden', 'false');
+  });
+
+  $('metricModalClose').addEventListener('click', () => {
+    metricModal.classList.remove('open');
+    metricModal.setAttribute('aria-hidden', 'true');
+  });
+
+  metricModal.addEventListener('click', event => {
+    if (event.target === metricModal) {
+      metricModal.classList.remove('open');
+      metricModal.setAttribute('aria-hidden', 'true');
+    }
+  });
+
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && metricModal.classList.contains('open')) {
+      metricModal.classList.remove('open');
+      metricModal.setAttribute('aria-hidden', 'true');
+    }
+  });
+
+  setDefaults();
+  (async()=>{
+    await refreshFreshData();
+    await loadQueueOptions();
+    await loadStaffing();
+    await loadHealthStatus();
+  })();
+</script>
+</body>
+</html>
+    """
+
+
+@app.get("/call-demand", response_class=HTMLResponse)
+def call_demand_page():
+    return r"""
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>BHS Corrugated | Call Demand</title>
+  <style>
+    :root {
+      --bg:#f4f7fa; --panel:#fff; --ink:#12263a; --muted:#667788;
+      --line:#d8e2ec; --brand:#0a5fa8; --brand-dark:#003f73;
+      --brand-soft:#e8f2fb; --danger:#b42318; --danger-soft:#fff0ee;
+      --amber:#9a6700; --shadow:0 7px 24px rgba(0,63,115,.08);
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--ink)}
+    button,input,select{font:inherit}
+    .topbar{height:66px;display:flex;align-items:center;justify-content:space-between;padding:0 28px;background:#063b66;color:#fff;position:sticky;top:0;z-index:10;box-shadow:0 2px 12px rgba(0,0,0,.12)}
+    .brand{display:flex;align-items:center;gap:12px}.mark{width:34px;height:34px;display:grid;place-items:center;border-radius:10px;background:#0a6fb9;font-weight:900}
+    .brand-title{font-weight:800}.brand-sub{font-size:12px;color:#c9dbea;margin-top:1px}
+    .nav{display:flex;gap:16px}.nav a{color:#d3e4f2;text-decoration:none;font-size:13px}.nav a.active{color:#fff;font-weight:800}
+    .page{max-width:1500px;margin:0 auto;padding:28px}
+    .heading-row{display:flex;justify-content:space-between;align-items:flex-end;gap:18px;margin-bottom:20px;flex-wrap:wrap}
+    h1{margin:0;font-size:30px;letter-spacing:-.025em}.subtitle{margin-top:5px;color:var(--muted);font-size:14px}
+    .filters{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;display:grid;grid-template-columns:minmax(150px,1fr) minmax(150px,1fr) auto;gap:12px;align-items:end;box-shadow:var(--shadow);margin-bottom:18px}
+    .field label{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.07em;font-weight:800;color:var(--muted);margin-bottom:6px}
+    .field input{width:100%;height:40px;border:1px solid #cfdad4;border-radius:10px;background:#fff;padding:0 11px;color:var(--ink)}
+    .apply,.info-btn{height:40px;border-radius:10px;padding:0 17px;font-weight:800;cursor:pointer}
+    .apply{border:0;background:var(--brand);color:#fff}.apply:hover{background:var(--brand-dark)}
+    .info-btn{border:1px solid #bfd4c7;background:#fff;color:var(--brand-dark)}
+    .kpis{display:grid;grid-template-columns:repeat(10,minmax(115px,1fr));gap:12px;margin-bottom:18px}
+    .kpi{background:var(--panel);border:1px solid var(--line);border-radius:15px;padding:17px;box-shadow:var(--shadow);min-width:0}
+    .kpi-label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .kpi-value{margin-top:7px;font-size:24px;line-height:1;font-weight:850;letter-spacing:-.03em}.kpi-foot{margin-top:7px;color:var(--muted);font-size:10px}
+    .grid2{display:grid;grid-template-columns:1.25fr .75fr;gap:18px;margin-bottom:18px}
+    .panel{background:var(--panel);border:1px solid var(--line);border-radius:17px;box-shadow:var(--shadow);overflow:hidden}
+    .panel-head{min-height:58px;padding:14px 18px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:12px}
+    .panel-title{font-size:16px;font-weight:850}.panel-meta{color:var(--muted);font-size:11px;margin-top:2px}
+    .bars{padding:18px;height:330px;display:flex;align-items:flex-end;gap:7px;overflow-x:auto}
+    .bar-col{min-width:30px;flex:1;text-align:center}
+    .bar-stack{height:230px;display:flex;align-items:flex-end;justify-content:center;gap:2px}
+    .bar-in{width:10px;background:var(--brand);border-radius:5px 5px 0 0;min-height:1px}
+    .bar-ab{width:7px;background:#d56b60;border-radius:5px 5px 0 0;min-height:0}
+    .bar-label{font-size:9px;color:var(--muted);margin-top:7px;white-space:nowrap}
+    .bar-value{font-size:9px;font-weight:800;margin-bottom:3px}
+    .trend{padding:18px}
+    .trend-row{display:grid;grid-template-columns:100px 1fr 70px;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid #edf1ef}
+    .trend-row:last-child{border-bottom:0}.trend-track{height:9px;background:#e9efec;border-radius:99px;overflow:hidden}.trend-fill{height:100%;background:var(--brand);border-radius:99px}
+    .queue-wrap{overflow:auto;max-height:520px}
+    table{width:100%;min-width:900px;border-collapse:separate;border-spacing:0;font-size:13px}
+    th{position:sticky;top:0;background:#f7f9f8;text-align:right;padding:12px;color:#536159;font-size:10px;text-transform:uppercase;letter-spacing:.055em;border-bottom:1px solid var(--line);cursor:pointer;white-space:nowrap}
+    th:first-child,td:first-child{text-align:left}
+    td{text-align:right;padding:12px;border-bottom:1px solid #edf1ef;white-space:nowrap;font-variant-numeric:tabular-nums}
+    tbody tr:hover{background:#f8fbf9}.queue-name{font-weight:780}
+    .pill{display:inline-flex;border-radius:999px;padding:4px 8px;font-size:10px;font-weight:800}.good{background:var(--brand-soft);color:var(--brand-dark)}.warn{background:#fff7dd;color:var(--amber)}.bad{background:var(--danger-soft);color:var(--danger)}
+    .note{padding:13px 18px;background:#f7faf8;color:#5f6e66;font-size:11px;border-top:1px solid var(--line)}
+    .outcome-list{padding:8px 18px 14px}
+    .outcome-row{display:grid;grid-template-columns:minmax(180px,1.4fr) 90px 90px minmax(220px,1.5fr);gap:12px;align-items:center;padding:11px 0;border-bottom:1px solid #edf1ef;font-size:12px}
+    .outcome-row:last-child{border-bottom:0}
+    .outcome-name{font-weight:800}.outcome-count{text-align:right;font-weight:800}.outcome-pct{text-align:right;color:var(--muted)}
+    .outcome-sample{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .modal-backdrop{position:fixed;inset:0;background:rgba(15,28,22,.48);display:none;align-items:center;justify-content:center;padding:24px;z-index:50}.modal-backdrop.open{display:flex}
+    .modal-card{width:min(720px,100%);max-height:86vh;overflow:auto;background:#fff;border-radius:20px;box-shadow:0 24px 70px rgba(0,0,0,.24)}
+    .modal-head{display:flex;justify-content:space-between;align-items:center;padding:20px 22px 16px;border-bottom:1px solid var(--line);position:sticky;top:0;background:#fff}
+    .modal-title{font-size:19px;font-weight:850}.modal-close{width:34px;height:34px;border:0;border-radius:9px;background:#f1f5f3;font-size:20px;cursor:pointer}
+    .defs{padding:8px 22px 22px}.def{padding:14px 0;border-bottom:1px solid #edf1ef}.def:last-child{border:0}.def strong{display:block;font-size:14px;margin-bottom:4px}.def p{margin:0;color:var(--muted);font-size:13px;line-height:1.5}
+    .formula{display:inline-block;margin-top:6px;padding:5px 8px;border-radius:8px;background:#f4f7f6;font-size:12px;font-family:ui-monospace,monospace}
+    .loading{opacity:.6;pointer-events:none}.message{padding:36px;text-align:center;color:var(--muted)}
+    @media(max-width:1200px){.kpis{grid-template-columns:repeat(4,1fr)}.grid2{grid-template-columns:1fr}}
+    @media(max-width:700px){.page{padding:18px 12px}.topbar{padding:0 14px}.kpis{grid-template-columns:repeat(2,1fr)}.filters{grid-template-columns:1fr}h1{font-size:25px}}
+  .bhs-logo-wrap{margin-left:12px;background:#fff;border-radius:8px;padding:4px 8px;display:flex;align-items:center;justify-content:center;flex:0 0 auto;min-height:46px}.bhs-header-logo{display:block;height:40px;width:auto;max-width:118px;object-fit:contain}@media(max-width:700px){.bhs-logo-wrap{margin-left:auto;padding:3px 6px;min-height:40px}.bhs-header-logo{height:34px;max-width:94px}}.health-strip{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin-bottom:14px;box-shadow:var(--shadow)}.health-left{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.health-dot{width:9px;height:9px;border-radius:50%;display:inline-block}.health-healthy{background:#2e8b57}.health-delayed{background:#d59b00}.health-stale{background:#c0392b}.health-error{background:#c0392b}.health-no_runs{background:#8a98a6}.health-no_data{background:#8a98a6}.health-label{font-size:12px;font-weight:850}.health-meta{font-size:11px;color:var(--muted)}
+/* =========================
+   V8.7.0 Modern UI Refresh
+   Presentation-only overrides
+   ========================= */
+:root{
+  --surface:#ffffff;
+  --surface-soft:rgba(255,255,255,.72);
+  --surface-tint:#f8fbfd;
+  --navy:#07395f;
+  --navy-2:#0b4e7f;
+  --blue:#0b6fb8;
+  --blue-soft:#eaf5fc;
+  --steel:#e7edf2;
+  --text:#14283a;
+  --muted-2:#718294;
+  --radius-lg:22px;
+  --radius-md:16px;
+  --shadow-soft:0 14px 34px rgba(11,55,88,.07);
+  --shadow-hover:0 18px 42px rgba(11,55,88,.12);
+}
+body{
+  background:
+    radial-gradient(circle at 5% 0%, rgba(11,111,184,.08), transparent 28rem),
+    linear-gradient(180deg,#f8fbfd 0%,#f3f7fa 100%);
+  color:var(--text);
+}
+.topbar{
+  height:72px;
+  padding:0 30px;
+  background:linear-gradient(100deg,#062f51 0%,#074b79 100%);
+  box-shadow:0 8px 28px rgba(4,44,75,.16);
+  border-bottom:1px solid rgba(255,255,255,.08);
+  backdrop-filter:blur(14px);
+}
+.brand-title{font-size:15px;letter-spacing:.01em}
+.brand-sub{color:#c8dbea;letter-spacing:.02em}
+.nav{
+  gap:6px;
+  padding:5px;
+  border:1px solid rgba(255,255,255,.10);
+  background:rgba(255,255,255,.06);
+  border-radius:999px;
+}
+.nav a{
+  padding:8px 12px;
+  border-radius:999px;
+  color:#d9e9f5;
+  transition:background .18s ease,color .18s ease,transform .18s ease;
+}
+.nav a:hover{
+  background:rgba(255,255,255,.10);
+  color:#fff;
+  transform:translateY(-1px);
+}
+.nav a.active{
+  color:#07395f;
+  background:#fff;
+  box-shadow:0 5px 14px rgba(0,0,0,.10);
+  font-weight:850;
+}
+.bhs-logo-wrap{
+  border-radius:12px;
+  border:1px solid rgba(255,255,255,.22);
+  box-shadow:0 5px 14px rgba(0,0,0,.10);
+}
+.page{
+  max-width:1540px;
+  padding:34px 34px 46px;
+}
+.heading-row{
+  align-items:center;
+  padding:4px 2px 6px;
+  margin-bottom:18px;
+}
+h1{
+  font-size:32px;
+  line-height:1.15;
+  letter-spacing:-.035em;
+  color:#10283b;
+}
+.subtitle{
+  font-size:14px;
+  margin-top:8px;
+  color:#65798a;
+}
+.policy{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  margin-top:10px;
+  padding:6px 10px;
+  border-radius:999px;
+  background:rgba(11,111,184,.07);
+  color:#527086;
+}
+.health-strip{
+  border:0;
+  border-radius:999px;
+  background:rgba(255,255,255,.82);
+  box-shadow:none;
+  padding:10px 16px;
+  border:1px solid rgba(109,139,162,.16);
+  backdrop-filter:blur(12px);
+}
+.health-dot{
+  box-shadow:0 0 0 4px rgba(46,139,87,.08);
+}
+.filters{
+  border:0;
+  border-radius:18px;
+  padding:12px;
+  gap:10px;
+  background:rgba(255,255,255,.78);
+  box-shadow:0 8px 24px rgba(9,57,91,.06);
+  backdrop-filter:blur(14px);
+  border:1px solid rgba(99,134,160,.14);
+}
+.field label{
+  margin:0 0 5px 4px;
+  font-size:10px;
+  letter-spacing:.10em;
+}
+input,select{
+  min-height:42px;
+  border:1px solid #dce6ed;
+  border-radius:12px;
+  background:#fbfdff;
+  box-shadow:inset 0 1px 2px rgba(16,40,59,.03);
+}
+input:focus,select:focus{
+  border-color:#8fc4e8;
+  box-shadow:0 0 0 4px rgba(11,111,184,.08);
+}
+.btn,.apply,.info-btn{
+  border-radius:12px;
+  box-shadow:0 7px 16px rgba(11,111,184,.14);
+  transition:transform .18s ease,box-shadow .18s ease,filter .18s ease;
+}
+.btn:hover,.apply:hover,.info-btn:hover{
+  transform:translateY(-1px);
+  box-shadow:0 10px 22px rgba(11,111,184,.18);
+}
+.kpis{
+  gap:10px;
+  margin:22px 0 28px;
+}
+.kpi{
+  position:relative;
+  overflow:hidden;
+  border:0;
+  border-radius:18px;
+  padding:17px 16px 16px;
+  background:rgba(255,255,255,.82);
+  box-shadow:none;
+  border:1px solid rgba(104,137,160,.12);
+  transition:transform .18s ease,box-shadow .18s ease,background .18s ease;
+}
+.kpi:before{
+  content:"";
+  position:absolute;
+  left:0;
+  top:0;
+  bottom:0;
+  width:3px;
+  background:linear-gradient(180deg,#0b6fb8,#65b7e8);
+  opacity:.85;
+}
+.kpi:hover{
+  transform:translateY(-2px);
+  background:#fff;
+  box-shadow:var(--shadow-soft);
+}
+.kpi-label{
+  font-size:10px;
+  letter-spacing:.09em;
+  color:#708293;
+}
+.kpi-value{
+  font-size:29px;
+  letter-spacing:-.035em;
+  margin-top:9px;
+  color:#102b40;
+}
+.kpi-foot{
+  margin-top:5px;
+  line-height:1.35;
+  color:#80909d;
+}
+.grid,.grid2{
+  gap:22px;
+  margin-bottom:26px;
+}
+.panel{
+  border:0;
+  border-radius:var(--radius-lg);
+  background:rgba(255,255,255,.74);
+  box-shadow:none;
+  overflow:hidden;
+  border:1px solid rgba(100,135,160,.10);
+  backdrop-filter:blur(12px);
+  transition:box-shadow .18s ease,background .18s ease;
+}
+.panel:hover{
+  background:rgba(255,255,255,.88);
+  box-shadow:0 14px 36px rgba(8,55,89,.055);
+}
+.panel-head{
+  border-bottom:0;
+  padding:20px 22px 10px;
+  align-items:flex-start;
+}
+.panel-title{
+  font-size:16px;
+  letter-spacing:-.015em;
+  color:#173247;
+}
+.panel-title:after{
+  content:"";
+  display:block;
+  width:32px;
+  height:3px;
+  margin-top:9px;
+  border-radius:999px;
+  background:linear-gradient(90deg,#0b6fb8,#6cbce9);
+}
+.panel-meta{
+  margin-top:5px;
+  color:#7c8e9d;
+}
+.panel-body{
+  padding:14px 22px 22px;
+}
+.attention,.staffing-grid{
+  gap:10px;
+}
+.attention-card,.stat,.compare-card,.hour-card,.insight{
+  border:0;
+  border-radius:15px;
+  background:linear-gradient(180deg,#fbfdff,#f7fafc);
+  box-shadow:inset 0 0 0 1px rgba(107,139,160,.10);
+}
+.attention-card,.stat{
+  padding:14px;
+}
+.attention-card:hover,.stat:hover,.compare-card:hover,.hour-card:hover,.insight:hover{
+  background:#fff;
+}
+.attention-label,.stat-name{
+  color:#738696;
+}
+.attention-value,.stat-value{
+  color:#123047;
+  letter-spacing:-.025em;
+}
+.summary-row{
+  padding:11px 0;
+  border-bottom:1px solid rgba(116,144,164,.12);
+}
+.summary-row span{color:#718594}
+.summary-row strong{color:#18364c}
+.table-wrap,.queue-wrap,.heatmap-wrap{
+  border-radius:16px;
+  overflow:auto;
+}
+table{
+  border-collapse:separate;
+  border-spacing:0;
+}
+th{
+  background:#f4f8fb;
+  color:#5f7485;
+  font-size:10px;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+}
+th,td{
+  border-color:rgba(113,143,165,.12)!important;
+}
+tbody tr{
+  transition:background .14s ease;
+}
+tbody tr:hover{
+  background:#f7fbfe;
+}
+.pill{
+  border-radius:999px;
+  border:0;
+  background:#eef5fa;
+  color:#47677e;
+}
+.note,.flag,.warning{
+  border:0;
+  border-radius:14px;
+  box-shadow:inset 0 0 0 1px rgba(117,145,164,.10);
+}
+.barwrap,.trend-track{
+  border-radius:999px;
+  background:#eaf0f4;
+  overflow:hidden;
+}
+.bar,.trend-fill{
+  border-radius:999px;
+}
+.modal-card{
+  border-radius:22px;
+  box-shadow:0 28px 70px rgba(4,37,62,.22);
+}
+@media(max-width:1100px){
+  .nav{border-radius:18px}
+}
+@media(max-width:700px){
+  .page{padding:22px 16px 36px}
+  h1{font-size:27px}
+  .health-strip{border-radius:16px}
+  .filters{border-radius:16px}
+  .kpi{border-radius:16px}
+  .panel{border-radius:18px}
+}
+
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><div><div class="brand-title">BHS Corrugated</div><div class="brand-sub">Contact Center Analytics</div></div></div>
+  <nav class="nav"><a href="/executive-overview">Executive</a><a href="/staffing">Staffing</a><a class="active" href="/call-demand">Call Demand</a><a href="/service-sla">Service / SLA</a><a href="/missed-callbacks">Missed & Callbacks</a><a href="/inbound-outbound">Call Activity</a><a href="/auth/logout">Sign out</a></nav><div class="bhs-logo-wrap"><img class="bhs-header-logo" src="/static/bhs_logo.png" alt="BHS Corrugated logo"></div>
+</header>
+
+<main class="page" id="page">
+  <div class="heading-row">
+    <div><h1>Call Demand</h1><div class="subtitle">Inbound demand, queue performance, timing patterns and outbound activity.</div></div>
+    <div style="display:flex;align-items:center;gap:10px"><button class="info-btn" id="infoBtn">ⓘ Metric Definitions</button><div class="subtitle" id="version">Loading backend…</div></div>
+  </div>
+
+  <section class="filters">
+    <div class="field"><label>From</label><input id="fromDate" type="date"></div>
+    <div class="field"><label>Through</label><input id="toDate" type="date"></div>
+    <div class="field"><label for="queueFilter">Queue</label><select id="queueFilter"><option value="">All queues</option></select></div>
+    <button class="apply" id="applyBtn">Apply</button>
+  </section>
+
+  <section class="kpis">
+    <div class="kpi"><div class="kpi-label">Total Inbound</div><div class="kpi-value" id="inbound">—</div><div class="kpi-foot">all inbound interactions</div></div>
+    <div class="kpi"><div class="kpi-label">Queued Inbound</div><div class="kpi-value" id="queued">—</div><div class="kpi-foot" id="unqueued">—</div></div>
+    <div class="kpi"><div class="kpi-label">Answered</div><div class="kpi-value" id="answered">—</div><div class="kpi-foot">queued interactions</div></div>
+    <div class="kpi"><div class="kpi-label">Abandoned</div><div class="kpi-value" id="abandoned">—</div><div class="kpi-foot">queued interactions</div></div>
+    <div class="kpi"><div class="kpi-label">Queue Answer Rate</div><div class="kpi-value" id="answerRate">—</div><div class="kpi-foot">answered ÷ queued inbound</div></div>
+    <div class="kpi"><div class="kpi-label">Queue Abandon Rate</div><div class="kpi-value" id="abandonRate">—</div><div class="kpi-foot">abandoned ÷ queued inbound</div></div>
+    <div class="kpi"><div class="kpi-label">Avg Queue Wait</div><div class="kpi-value" id="avgWait">—</div><div class="kpi-foot">queued inbound</div></div>
+    <div class="kpi"><div class="kpi-label">Max Queue Wait</div><div class="kpi-value" id="maxWait">—</div><div class="kpi-foot">longest queued wait</div></div>
+    <div class="kpi"><div class="kpi-label">Outbound</div><div class="kpi-value" id="outbound">—</div><div class="kpi-foot">WxCC outdial interactions</div></div>
+    <div class="kpi"><div class="kpi-label">Peak Hour</div><div class="kpi-value" id="peakHour">—</div><div class="kpi-foot" id="peakHourFoot">—</div></div>
+  </section>
+
+  <section class="grid2">
+    <div class="panel">
+      <div class="panel-head"><div><div class="panel-title">Inbound Demand by Hour</div><div class="panel-meta">Green = inbound · red = abandoned</div></div></div>
+      <div class="bars" id="hourlyBars"></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><div><div class="panel-title">Daily Volume</div><div class="panel-meta">Inbound interactions by local calendar day</div></div></div>
+      <div class="trend" id="dailyTrend"></div>
+    </div>
+  </section>
+
+  <section class="panel" style="margin-bottom:18px">
+    <div class="panel-head">
+      <div>
+        <div class="panel-title">Non-Queued Inbound Outcomes</div>
+        <div class="panel-meta">What happened to inbound interactions that never received a stored task-level queue name.</div>
+      </div>
+      <div style="text-align:right">
+        <div style="font-size:24px;font-weight:850" id="nonQueuedCount">—</div>
+        <div class="panel-meta" id="nonQueuedPct">—</div>
+      </div>
+    </div>
+    <div class="outcome-list" id="nonQueuedBreakdown">
+      <div class="message">Loading outcome classifications…</div>
+    </div>
+    <div class="note">
+      Classification uses explicit Webex evidence first: TransferToDN, callback metadata, connected calls, abandoned calls, then other termination types. Unknown types are preserved instead of being guessed.
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><div><div class="panel-title">Queue Performance</div><div class="panel-meta" id="queueMeta">Loading…</div></div></div>
+    <div class="queue-wrap">
+      <table>
+        <thead><tr>
+          <th data-sort="queue_name">Queue</th>
+          <th data-sort="offered">Offered</th>
+          <th data-sort="answered">Answered</th>
+          <th data-sort="abandoned">Abandoned</th>
+          <th data-sort="answer_rate">Answer %</th>
+          <th data-sort="abandon_rate">Abandon %</th>
+          <th data-sort="avg_queue_seconds">Average Queue Wait</th>
+          <th data-sort="max_queue_seconds">Longest Queue Wait</th>
+        </tr></thead>
+        <tbody id="queueBody"></tbody>
+      </table>
+    </div>
+    <div class="note">Queue performance is based only on inbound interactions with a stored task-level queue name. Every offered call is assigned one manager-facing outcome, so <strong>Offered = Answered + Abandoned</strong>. The API still preserves raw abandoned and other queued outcome counts separately.</div>
+  </section>
+</main>
+
+<div class="modal-backdrop" id="modal" aria-hidden="true">
+  <div class="modal-card">
+    <div class="modal-head"><div><div class="modal-title">Call Demand Metric Definitions</div><div class="subtitle">How the dashboard classifies interactions.</div></div><button class="modal-close" id="closeBtn">×</button></div>
+    <div class="defs">
+      <div class="def"><strong>Total Inbound</strong><p>Every interaction whose direction is inbound, whether or not it ultimately entered a queue.</p></div>
+      <div class="def"><strong>Queued Inbound</strong><p>Inbound interactions with a stored task-level queue name. These form the denominator for operational queue answer and abandon rates.</p></div><div class="def"><strong>Non-Queued Inbound</strong><p>Inbound interactions without a stored task-level queue name. They remain visible as a separate count but are excluded from queue performance KPIs.</p></div><div class="def"><strong>Non-Queued Outcome</strong><p>Classification based on explicit task/task-leg evidence. TransferToDN is labeled directly; callbacks, connected calls and abandoned calls are classified next. Other Webex termination types remain visible under their original name.</p></div>
+      <div class="def"><strong>Answered</strong><p>Queued inbound interactions where Webex recorded at least one connected segment.</p><span class="formula">connected_count &gt; 0</span></div>
+      <div class="def"><strong>Abandoned</strong><p>For Call Demand, every queued inbound interaction is assigned exactly one outcome. Answered takes precedence when Webex recorded a connection; otherwise the call is reported as abandoned. This guarantees Offered = Answered + Abandoned.</p><span class="formula">Reported Abandoned = Raw Abandoned + Other Queued Outcomes</span></div><div class="def"><strong>Raw Abandoned</strong><p>Queued inbound interactions whose termination type is explicitly abandoned. The API preserves this count separately for auditability.</p><span class="formula">termination_type == abandoned</span></div><div class="def"><strong>Other Queued Outcomes</strong><p>Queued calls with no connection that were not explicitly marked abandoned. These are included in the manager-facing Abandoned total so every offered call is accounted for.</p></div>
+      <div class="def"><strong>Queue Answer Rate</strong><p>Percentage of queued calls inbound interactions that were answered.</p><span class="formula">Queued Answered ÷ Queued Inbound</span></div>
+      <div class="def"><strong>Queue Abandon Rate</strong><p>Percentage of offered queued interactions that were not answered.</p><span class="formula">Reported Abandoned ÷ Offered</span></div>
+      <div class="def"><strong>Queue Wait</strong><p>Time recorded in the task-level queue duration field. The dashboard shows average and maximum wait for queued inbound interactions.</p></div>
+      <div class="def"><strong>Queue Performance</strong><p>Interactions are grouped by the task-level final/last queue so transferred interactions are not counted multiple times across queue legs.</p></div>
+    </div>
+  </div>
+</div>
+
+<script>
+async function loadQueueOptions(){
+  const sel=$('queueFilter');
+  if(!sel)return;
+  const previous=sel.value;
+  const p=new URLSearchParams();
+  let f=null,t=null;
+  if(typeof localStart==='function'){f=localStart($('fromDate').value);t=localAfter($('toDate').value);}
+  else if(typeof localDayStartMs==='function'){f=localDayStartMs($('fromDate').value);t=localDayAfterMs($('toDate').value);}
+  if(f!==null)p.set('from_ms',f);
+  if(t!==null)p.set('to_ms',t);
+  try{
+    const r=await fetch('/api/dashboard/queues?'+p.toString());
+    if(!r.ok)throw new Error(`HTTP ${r.status}`);
+    const d=await r.json();
+    sel.innerHTML='<option value="">All queues</option>'+(d.queues||[]).map(q=>`<option value="${String(q).replaceAll('"','&quot;')}">${q}</option>`).join('');
+    if([...sel.options].some(o=>o.value===previous))sel.value=previous;
+  }catch(e){console.warn('Queue list failed',e)}
+}
+
+const $=id=>document.getElementById(id);
+
+
+async function refreshFreshData(){
+  const dot=document.getElementById('healthDot');
+  const label=document.getElementById('healthLabel');
+  const freshness=document.getElementById('healthFreshness');
+  const updated=document.getElementById('healthUpdated');
+
+  if(dot) dot.className='health-dot health-delayed';
+  if(label) label.textContent='Collector: Refreshing…';
+  if(freshness) freshness.textContent='Pulling recent WxCC data';
+  if(updated) updated.textContent='';
+
+  try{
+    const res=await fetch('/api/collector/refresh?lookback_minutes=120&min_interval_minutes=5',{
+      method:'POST'
+    });
+    if(!res.ok){
+      throw new Error(`${res.status} ${await res.text()}`);
+    }
+    return await res.json();
+  }catch(err){
+    console.warn('Fresh data pull failed:',err);
+    return {success:false,error:String(err)};
+  }
+}
+
+async function loadHealthStatus(){
+  const dot=document.getElementById('healthDot');
+  const label=document.getElementById('healthLabel');
+  const freshness=document.getElementById('healthFreshness');
+  const updated=document.getElementById('healthUpdated');
+  if(!dot||!label)return;
+  try{
+    const res=await fetch('/api/dashboard/health-status');
+    if(!res.ok)throw new Error(`${res.status} ${res.statusText}`);
+    const h=await res.json();
+    const c=h.collector||{},d=h.data||{};
+    dot.className=`health-dot health-${c.status||h.status||'no_data'}`;
+    const names={healthy:'Healthy',delayed:'Delayed',stale:'Stale',error:'Error',no_runs:'No runs',no_data:'No data'};
+    label.textContent=`Collector: ${names[c.status||h.status]||c.status||h.status}`;
+    freshness.textContent=c.age_minutes==null?'No successful collector run':`Last successful run: ${c.age_minutes} min ago`;
+    if(d.newest_data_ms||h.newest_data_ms){
+      updated.textContent=`Data through: ${new Date(Number(d.newest_data_ms||h.newest_data_ms)).toLocaleString()}`;
+    }else{
+      updated.textContent='Data through: —';
+    }
+  }catch(e){
+    dot.className='health-dot health-stale';
+    label.textContent='Data status: Unavailable';
+    freshness.textContent='Could not load health status';
+    updated.textContent='';
+  }
+}
+
+let data=null, sortKey='offered', sortDir=-1;
+
+function localStart(s){if(!s)return null;const[y,m,d]=s.split('-').map(Number);return new Date(y,m-1,d,0,0,0,0).getTime()}
+function localAfter(s){if(!s)return null;const[y,m,d]=s.split('-').map(Number);return new Date(y,m-1,d+1,0,0,0,0).getTime()}
+function setDefaults(){
+  const now=new Date(),from=new Date(now);
+  from.setDate(now.getDate()-6);
+  const localDate=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  $('fromDate').value=localDate(from);
+  $('toDate').value=localDate(now);
+}
+    const qf=$('queueFilter')?.value;if(qf)p.set('queue_name',qf);
+function url(){const p=new URLSearchParams();const f=localStart($('fromDate').value),t=localAfter($('toDate').value);if(f!==null)p.set('from_ms',f);if(t!==null)p.set('to_ms',t);p.set('timezone',Intl.DateTimeFormat().resolvedOptions().timeZone||'America/Detroit');return '/api/dashboard/call-demand?'+p.toString()}
+function pct(n){return `${Number(n||0).toFixed(2)}%`}
+function wait(s){s=Number(s||0);if(s<60)return `${s.toFixed(1)}s`;const m=Math.floor(s/60),r=Math.round(s%60);return `${m}m ${r}s`}
+function esc(v){return String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;')}
+
+function renderOverview(o){
+  $('inbound').textContent=o.inbound;
+  $('queued').textContent=o.queued_inbound;
+  $('unqueued').textContent=`${o.no_queue_inbound} did not enter a queue`;
+  $('answered').textContent=o.queued_answered;
+  $('abandoned').textContent=o.queued_abandoned;
+  $('answerRate').textContent=pct(o.queued_answer_rate);
+  $('abandonRate').textContent=pct(o.queued_abandon_rate);
+  $('avgWait').textContent=wait(o.avg_queued_wait_seconds);
+  $('maxWait').textContent=wait(o.max_queued_wait_seconds);
+  $('outbound').textContent=o.outbound;
+  $('nonQueuedCount').textContent=o.no_queue_inbound;
+  $('nonQueuedPct').textContent=o.inbound ? `${(o.no_queue_inbound/o.inbound*100).toFixed(1)}% of total inbound` : '0% of total inbound';
+  $('peakHour').textContent=o.peak_hour?.label||'—';
+  $('peakHourFoot').textContent=o.peak_hour?`${o.peak_hour.inbound} inbound interactions`:'No activity';
+}
+
+function renderNonQueued(nq){
+  const rows=nq?.breakdown||[];
+  if(!rows.length){
+    $('nonQueuedBreakdown').innerHTML='<div class="message">No non-queued inbound interactions.</div>';
+    return;
+  }
+  $('nonQueuedBreakdown').innerHTML=rows.map(r=>{
+    const terms=(r.termination_types||[]).join(', ');
+    const dests=(r.destination_samples||[]).join(', ');
+    const evidence=[terms?`Termination: ${terms}`:'',dests?`Destinations: ${dests}`:''].filter(Boolean).join(' · ')||'No extra detail';
+    return `<div class="outcome-row">
+      <div class="outcome-name">${esc(r.category)}</div>
+      <div class="outcome-count">${r.count}</div>
+      <div class="outcome-pct">${pct(r.percent)}</div>
+      <div class="outcome-sample" title="${esc(evidence)}">${esc(evidence)}</div>
+    </div>`;
+  }).join('');
+}
+
+function renderHourly(rows){
+  const max=Math.max(1,...rows.map(r=>r.inbound));
+  $('hourlyBars').innerHTML=rows.map(r=>{
+    const h=Math.max(r.inbound?4:0,r.inbound/max*210);
+    const a=Math.max(r.abandoned?4:0,r.abandoned/max*210);
+    return `<div class="bar-col" title="${r.label}: ${r.inbound} inbound, ${r.abandoned} abandoned">
+      <div class="bar-value">${r.inbound||''}</div>
+      <div class="bar-stack"><div class="bar-in" style="height:${h}px"></div><div class="bar-ab" style="height:${a}px"></div></div>
+      <div class="bar-label">${r.label.replace(' ','')}</div>
+    </div>`;
+  }).join('');
+}
+
+function renderDaily(rows){
+  if(!rows.length){$('dailyTrend').innerHTML='<div class="message">No daily data.</div>';return}
+  const max=Math.max(1,...rows.map(r=>r.inbound));
+  $('dailyTrend').innerHTML=rows.map(r=>`<div class="trend-row">
+    <div><strong>${esc(r.day_name.slice(0,3))}</strong><div class="panel-meta">${esc(r.date)}</div></div>
+    <div class="trend-track"><div class="trend-fill" style="width:${r.inbound/max*100}%"></div></div>
+    <div style="text-align:right"><strong>${r.inbound}</strong><div class="panel-meta">${pct(r.queued_answer_rate)} queue ans</div></div>
+  </div>`).join('');
+}
+
+function renderQueues(){
+  const rows=[...(data?.queues||[])]
+    .filter(r=>r.queue_name!=='Unassigned / No Queue')
+    .sort((a,b)=>{
+    const av=a[sortKey],bv=b[sortKey];
+    if(typeof av==='string'||typeof bv==='string')return String(av??'').localeCompare(String(bv??''))*sortDir;
+    return (Number(av||0)-Number(bv||0))*sortDir;
+  });
+  $('queueMeta').textContent=`${rows.length} queue groups · Offered = Answered + Abandoned`;
+  $('queueBody').innerHTML=rows.map(r=>{
+    const cls=r.abandon_rate>=20?'bad':'good';
+    return `<tr>
+      <td class="queue-name"><span class="pill ${cls}">${esc(r.queue_name)}</span></td>
+      <td>${r.offered}</td><td>${r.answered}</td><td title="Raw abandoned: ${r.raw_abandoned||0} · Other queued outcomes: ${r.other_outcomes||0}">${r.abandoned}</td>
+      <td>${pct(r.answer_rate)}</td><td>${pct(r.abandon_rate)}</td>
+      <td>${wait(r.avg_queue_seconds)}</td><td>${wait(r.max_queue_seconds)}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function load(){
+  $('page').classList.add('loading');
+  try{
+    const r=await fetch(url()); if(!r.ok)throw new Error(`HTTP ${r.status}`);
+    data=await r.json();
+    renderOverview(data.overview);renderNonQueued(data.nonqueued);renderHourly(data.hourly);renderDaily(data.daily);renderQueues();
+    $('version').textContent=`Backend v${data.backend_version}`;
+  }catch(e){
+    document.querySelector('.grid2').innerHTML=`<div class="panel"><div class="message">Could not load Call Demand data: ${esc(e.message)}</div></div>`;
+  }finally{$('page').classList.remove('loading')}
+}
+document.querySelectorAll('th[data-sort]').forEach(th=>th.addEventListener('click',()=>{const k=th.dataset.sort;if(sortKey===k)sortDir*=-1;else{sortKey=k;sortDir=(k==='queue_name'?1:-1)}renderQueues()}));
+$('applyBtn').addEventListener('click',async()=>{await loadQueueOptions();await load();});
+$('queueFilter').addEventListener('change',load);
+const modal=$('modal');$('infoBtn').addEventListener('click',()=>modal.classList.add('open'));$('closeBtn').addEventListener('click',()=>modal.classList.remove('open'));modal.addEventListener('click',e=>{if(e.target===modal)modal.classList.remove('open')});document.addEventListener('keydown',e=>{if(e.key==='Escape')modal.classList.remove('open')});
+setDefaults();
+(async()=>{
+  await refreshFreshData();
+  await loadQueueOptions();
+    await load();
+  await loadHealthStatus();
+})();
+</script>
+</body>
+</html>
+    """
+
+
+@app.get("/service-sla", response_class=HTMLResponse)
+def service_sla_page():
+    return r"""
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>BHS Corrugated | Service / SLA</title>
+  <style>
+    :root{
+      --bg:#f4f7fa;--panel:#fff;--ink:#12263a;--muted:#667788;--line:#d8e2ec;
+      --brand:#0a5fa8;--brand-dark:#003f73;--brand-soft:#e8f2fb;
+      --amber:#9a6700;--amber-soft:#fff7dd;--danger:#b42318;--danger-soft:#fff0ee;
+      --shadow:0 7px 24px rgba(0,63,115,.08)
+    }
+    *{box-sizing:border-box}body{margin:0;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--ink)}
+    button,input{font:inherit}.topbar{height:66px;display:flex;align-items:center;justify-content:space-between;padding:0 28px;background:#063b66;color:#fff;position:sticky;top:0;z-index:10;box-shadow:0 2px 12px rgba(0,0,0,.12)}
+    .brand{display:flex;align-items:center;gap:12px}.mark{width:34px;height:34px;display:grid;place-items:center;border-radius:10px;background:#0a6fb9;font-weight:900}.brand-title{font-weight:800}.brand-sub{font-size:12px;color:#c9dbea;margin-top:1px}
+    .nav{display:flex;gap:16px}.nav a{color:#d3e4f2;text-decoration:none;font-size:13px}.nav a.active{color:#fff;font-weight:800}
+    .page{max-width:1500px;margin:0 auto;padding:28px}.heading-row{display:flex;justify-content:space-between;align-items:flex-end;gap:18px;margin-bottom:20px;flex-wrap:wrap}
+    h1{margin:0;font-size:30px;letter-spacing:-.025em}.subtitle{margin-top:5px;color:var(--muted);font-size:14px}
+    .filters{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;display:grid;grid-template-columns:minmax(160px,1fr) minmax(160px,1fr) auto;gap:12px;align-items:end;box-shadow:var(--shadow);margin-bottom:18px}
+    .field label{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.07em;font-weight:800;color:var(--muted);margin-bottom:6px}.field input{width:100%;height:40px;border:1px solid #cfdad4;border-radius:10px;padding:0 11px;background:#fff;color:var(--ink)}
+    .apply,.info-btn{height:40px;border-radius:10px;padding:0 17px;font-weight:800;cursor:pointer}.apply{border:0;background:var(--brand);color:#fff}.apply:hover{background:var(--brand-dark)}.info-btn{border:1px solid #bfd4c7;background:#fff;color:var(--brand-dark)}
+    .kpis{display:grid;grid-template-columns:repeat(6,minmax(140px,1fr));gap:12px;margin-bottom:18px}.kpi{background:var(--panel);border:1px solid var(--line);border-radius:15px;padding:17px;box-shadow:var(--shadow);min-width:0}
+    .kpi-label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.kpi-value{margin-top:7px;font-size:24px;line-height:1;font-weight:850;letter-spacing:-.03em}.kpi-foot{margin-top:7px;color:var(--muted);font-size:10px}
+    .grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:18px}.panel{background:var(--panel);border:1px solid var(--line);border-radius:17px;box-shadow:var(--shadow);overflow:hidden}.panel-head{min-height:58px;padding:14px 18px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:12px}.panel-title{font-size:16px;font-weight:850}.panel-meta{color:var(--muted);font-size:11px;margin-top:2px}
+    .hour-grid{padding:14px 18px;display:grid;grid-template-columns:repeat(6,1fr);gap:10px}.hour-card{border:1px solid #e5ebe8;border-radius:12px;padding:10px}.hour-card strong{display:block;font-size:13px}.hour-card span{display:block;margin-top:4px;font-size:11px;color:var(--muted)}.hour-card.bad{background:var(--danger-soft);border-color:#f1c4bf}.hour-card.warn{background:var(--amber-soft);border-color:#ead8a6}.hour-card.good{background:var(--brand-soft);border-color:#cfe2d7}
+    .queue-wrap{overflow:auto;max-height:540px}table{width:100%;min-width:1100px;border-collapse:separate;border-spacing:0;font-size:13px}th{position:sticky;top:0;background:#f7f9f8;text-align:right;padding:12px;color:#536159;font-size:10px;text-transform:uppercase;letter-spacing:.055em;border-bottom:1px solid var(--line);cursor:pointer;white-space:nowrap}th:first-child,td:first-child{text-align:left}td{text-align:right;padding:12px;border-bottom:1px solid #edf1ef;white-space:nowrap;font-variant-numeric:tabular-nums}tbody tr:hover{background:#f8fbf9}
+    .queue-name{font-weight:780}.pill{display:inline-flex;border-radius:999px;padding:4px 8px;font-size:10px;font-weight:800}.good{background:var(--brand-soft);color:var(--brand-dark)}.warn{background:var(--amber-soft);color:var(--amber)}.bad{background:var(--danger-soft);color:var(--danger)}
+    .insights{padding:16px 18px}.insight{padding:12px 0;border-bottom:1px solid #edf1ef}.insight:last-child{border:0}.insight strong{display:block;font-size:13px}.insight span{display:block;color:var(--muted);font-size:12px;margin-top:3px}
+    .note{padding:13px 18px;background:#f7faf8;color:#5f6e66;font-size:11px;border-top:1px solid var(--line)}
+    .modal-backdrop{position:fixed;inset:0;background:rgba(15,28,22,.48);display:none;align-items:center;justify-content:center;padding:24px;z-index:50}.modal-backdrop.open{display:flex}.modal-card{width:min(760px,100%);max-height:86vh;overflow:auto;background:#fff;border-radius:20px;box-shadow:0 24px 70px rgba(0,0,0,.24)}
+    .modal-head{display:flex;justify-content:space-between;align-items:center;padding:20px 22px 16px;border-bottom:1px solid var(--line);position:sticky;top:0;background:#fff}.modal-title{font-size:19px;font-weight:850}.modal-close{width:34px;height:34px;border:0;border-radius:9px;background:#f1f5f3;font-size:20px;cursor:pointer}
+    .defs{padding:8px 22px 22px}.def{padding:14px 0;border-bottom:1px solid #edf1ef}.def:last-child{border:0}.def strong{display:block;font-size:14px;margin-bottom:4px}.def p{margin:0;color:var(--muted);font-size:13px;line-height:1.5}.formula{display:inline-block;margin-top:6px;padding:5px 8px;border-radius:8px;background:#f4f7f6;font-size:12px;font-family:ui-monospace,monospace}
+    .loading{opacity:.6;pointer-events:none}.message{padding:36px;text-align:center;color:var(--muted)}
+    @media(max-width:1200px){.kpis{grid-template-columns:repeat(4,1fr)}.grid2{grid-template-columns:1fr}.filters{grid-template-columns:repeat(3,1fr)}}
+    @media(max-width:700px){.page{padding:18px 12px}.topbar{padding:0 14px}.kpis{grid-template-columns:repeat(2,1fr)}.filters{grid-template-columns:1fr}.hour-grid{grid-template-columns:repeat(2,1fr)}h1{font-size:25px}}
+  .bhs-logo-wrap{margin-left:12px;background:#fff;border-radius:8px;padding:4px 8px;display:flex;align-items:center;justify-content:center;flex:0 0 auto;min-height:46px}.bhs-header-logo{display:block;height:40px;width:auto;max-width:118px;object-fit:contain}@media(max-width:700px){.bhs-logo-wrap{margin-left:auto;padding:3px 6px;min-height:40px}.bhs-header-logo{height:34px;max-width:94px}}.health-strip{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin-bottom:14px;box-shadow:var(--shadow)}.health-left{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.health-dot{width:9px;height:9px;border-radius:50%;display:inline-block}.health-healthy{background:#2e8b57}.health-delayed{background:#d59b00}.health-stale{background:#c0392b}.health-error{background:#c0392b}.health-no_runs{background:#8a98a6}.health-no_data{background:#8a98a6}.health-label{font-size:12px;font-weight:850}.health-meta{font-size:11px;color:var(--muted)}
+/* =========================
+   V8.7.0 Modern UI Refresh
+   Presentation-only overrides
+   ========================= */
+:root{
+  --surface:#ffffff;
+  --surface-soft:rgba(255,255,255,.72);
+  --surface-tint:#f8fbfd;
+  --navy:#07395f;
+  --navy-2:#0b4e7f;
+  --blue:#0b6fb8;
+  --blue-soft:#eaf5fc;
+  --steel:#e7edf2;
+  --text:#14283a;
+  --muted-2:#718294;
+  --radius-lg:22px;
+  --radius-md:16px;
+  --shadow-soft:0 14px 34px rgba(11,55,88,.07);
+  --shadow-hover:0 18px 42px rgba(11,55,88,.12);
+}
+body{
+  background:
+    radial-gradient(circle at 5% 0%, rgba(11,111,184,.08), transparent 28rem),
+    linear-gradient(180deg,#f8fbfd 0%,#f3f7fa 100%);
+  color:var(--text);
+}
+.topbar{
+  height:72px;
+  padding:0 30px;
+  background:linear-gradient(100deg,#062f51 0%,#074b79 100%);
+  box-shadow:0 8px 28px rgba(4,44,75,.16);
+  border-bottom:1px solid rgba(255,255,255,.08);
+  backdrop-filter:blur(14px);
+}
+.brand-title{font-size:15px;letter-spacing:.01em}
+.brand-sub{color:#c8dbea;letter-spacing:.02em}
+.nav{
+  gap:6px;
+  padding:5px;
+  border:1px solid rgba(255,255,255,.10);
+  background:rgba(255,255,255,.06);
+  border-radius:999px;
+}
+.nav a{
+  padding:8px 12px;
+  border-radius:999px;
+  color:#d9e9f5;
+  transition:background .18s ease,color .18s ease,transform .18s ease;
+}
+.nav a:hover{
+  background:rgba(255,255,255,.10);
+  color:#fff;
+  transform:translateY(-1px);
+}
+.nav a.active{
+  color:#07395f;
+  background:#fff;
+  box-shadow:0 5px 14px rgba(0,0,0,.10);
+  font-weight:850;
+}
+.bhs-logo-wrap{
+  border-radius:12px;
+  border:1px solid rgba(255,255,255,.22);
+  box-shadow:0 5px 14px rgba(0,0,0,.10);
+}
+.page{
+  max-width:1540px;
+  padding:34px 34px 46px;
+}
+.heading-row{
+  align-items:center;
+  padding:4px 2px 6px;
+  margin-bottom:18px;
+}
+h1{
+  font-size:32px;
+  line-height:1.15;
+  letter-spacing:-.035em;
+  color:#10283b;
+}
+.subtitle{
+  font-size:14px;
+  margin-top:8px;
+  color:#65798a;
+}
+.policy{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  margin-top:10px;
+  padding:6px 10px;
+  border-radius:999px;
+  background:rgba(11,111,184,.07);
+  color:#527086;
+}
+.health-strip{
+  border:0;
+  border-radius:999px;
+  background:rgba(255,255,255,.82);
+  box-shadow:none;
+  padding:10px 16px;
+  border:1px solid rgba(109,139,162,.16);
+  backdrop-filter:blur(12px);
+}
+.health-dot{
+  box-shadow:0 0 0 4px rgba(46,139,87,.08);
+}
+.filters{
+  border:0;
+  border-radius:18px;
+  padding:12px;
+  gap:10px;
+  background:rgba(255,255,255,.78);
+  box-shadow:0 8px 24px rgba(9,57,91,.06);
+  backdrop-filter:blur(14px);
+  border:1px solid rgba(99,134,160,.14);
+}
+.field label{
+  margin:0 0 5px 4px;
+  font-size:10px;
+  letter-spacing:.10em;
+}
+input,select{
+  min-height:42px;
+  border:1px solid #dce6ed;
+  border-radius:12px;
+  background:#fbfdff;
+  box-shadow:inset 0 1px 2px rgba(16,40,59,.03);
+}
+input:focus,select:focus{
+  border-color:#8fc4e8;
+  box-shadow:0 0 0 4px rgba(11,111,184,.08);
+}
+.btn,.apply,.info-btn{
+  border-radius:12px;
+  box-shadow:0 7px 16px rgba(11,111,184,.14);
+  transition:transform .18s ease,box-shadow .18s ease,filter .18s ease;
+}
+.btn:hover,.apply:hover,.info-btn:hover{
+  transform:translateY(-1px);
+  box-shadow:0 10px 22px rgba(11,111,184,.18);
+}
+.kpis{
+  gap:10px;
+  margin:22px 0 28px;
+}
+.kpi{
+  position:relative;
+  overflow:hidden;
+  border:0;
+  border-radius:18px;
+  padding:17px 16px 16px;
+  background:rgba(255,255,255,.82);
+  box-shadow:none;
+  border:1px solid rgba(104,137,160,.12);
+  transition:transform .18s ease,box-shadow .18s ease,background .18s ease;
+}
+.kpi:before{
+  content:"";
+  position:absolute;
+  left:0;
+  top:0;
+  bottom:0;
+  width:3px;
+  background:linear-gradient(180deg,#0b6fb8,#65b7e8);
+  opacity:.85;
+}
+.kpi:hover{
+  transform:translateY(-2px);
+  background:#fff;
+  box-shadow:var(--shadow-soft);
+}
+.kpi-label{
+  font-size:10px;
+  letter-spacing:.09em;
+  color:#708293;
+}
+.kpi-value{
+  font-size:29px;
+  letter-spacing:-.035em;
+  margin-top:9px;
+  color:#102b40;
+}
+.kpi-foot{
+  margin-top:5px;
+  line-height:1.35;
+  color:#80909d;
+}
+.grid,.grid2{
+  gap:22px;
+  margin-bottom:26px;
+}
+.panel{
+  border:0;
+  border-radius:var(--radius-lg);
+  background:rgba(255,255,255,.74);
+  box-shadow:none;
+  overflow:hidden;
+  border:1px solid rgba(100,135,160,.10);
+  backdrop-filter:blur(12px);
+  transition:box-shadow .18s ease,background .18s ease;
+}
+.panel:hover{
+  background:rgba(255,255,255,.88);
+  box-shadow:0 14px 36px rgba(8,55,89,.055);
+}
+.panel-head{
+  border-bottom:0;
+  padding:20px 22px 10px;
+  align-items:flex-start;
+}
+.panel-title{
+  font-size:16px;
+  letter-spacing:-.015em;
+  color:#173247;
+}
+.panel-title:after{
+  content:"";
+  display:block;
+  width:32px;
+  height:3px;
+  margin-top:9px;
+  border-radius:999px;
+  background:linear-gradient(90deg,#0b6fb8,#6cbce9);
+}
+.panel-meta{
+  margin-top:5px;
+  color:#7c8e9d;
+}
+.panel-body{
+  padding:14px 22px 22px;
+}
+.attention,.staffing-grid{
+  gap:10px;
+}
+.attention-card,.stat,.compare-card,.hour-card,.insight{
+  border:0;
+  border-radius:15px;
+  background:linear-gradient(180deg,#fbfdff,#f7fafc);
+  box-shadow:inset 0 0 0 1px rgba(107,139,160,.10);
+}
+.attention-card,.stat{
+  padding:14px;
+}
+.attention-card:hover,.stat:hover,.compare-card:hover,.hour-card:hover,.insight:hover{
+  background:#fff;
+}
+.attention-label,.stat-name{
+  color:#738696;
+}
+.attention-value,.stat-value{
+  color:#123047;
+  letter-spacing:-.025em;
+}
+.summary-row{
+  padding:11px 0;
+  border-bottom:1px solid rgba(116,144,164,.12);
+}
+.summary-row span{color:#718594}
+.summary-row strong{color:#18364c}
+.table-wrap,.queue-wrap,.heatmap-wrap{
+  border-radius:16px;
+  overflow:auto;
+}
+table{
+  border-collapse:separate;
+  border-spacing:0;
+}
+th{
+  background:#f4f8fb;
+  color:#5f7485;
+  font-size:10px;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+}
+th,td{
+  border-color:rgba(113,143,165,.12)!important;
+}
+tbody tr{
+  transition:background .14s ease;
+}
+tbody tr:hover{
+  background:#f7fbfe;
+}
+.pill{
+  border-radius:999px;
+  border:0;
+  background:#eef5fa;
+  color:#47677e;
+}
+.note,.flag,.warning{
+  border:0;
+  border-radius:14px;
+  box-shadow:inset 0 0 0 1px rgba(117,145,164,.10);
+}
+.barwrap,.trend-track{
+  border-radius:999px;
+  background:#eaf0f4;
+  overflow:hidden;
+}
+.bar,.trend-fill{
+  border-radius:999px;
+}
+.modal-card{
+  border-radius:22px;
+  box-shadow:0 28px 70px rgba(4,37,62,.22);
+}
+@media(max-width:1100px){
+  .nav{border-radius:18px}
+}
+@media(max-width:700px){
+  .page{padding:22px 16px 36px}
+  h1{font-size:27px}
+  .health-strip{border-radius:16px}
+  .filters{border-radius:16px}
+  .kpi{border-radius:16px}
+  .panel{border-radius:18px}
+}
+
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><div><div class="brand-title">BHS Corrugated</div><div class="brand-sub">Contact Center Analytics</div></div></div>
+  <nav class="nav"><a href="/executive-overview">Executive</a><a href="/staffing">Staffing</a><a href="/call-demand">Call Demand</a><a class="active" href="/service-sla">Service / SLA</a><a href="/missed-callbacks">Missed & Callbacks</a><a href="/inbound-outbound">Call Activity</a><a href="/auth/logout">Sign out</a></nav><div class="bhs-logo-wrap"><img class="bhs-header-logo" src="/static/bhs_logo.png" alt="BHS Corrugated logo"></div>
+</header>
+
+<main class="page" id="page">
+  <div class="heading-row">
+    <div><h1>Service / SLA</h1><div class="subtitle">Queue responsiveness, SLA attainment, abandon pressure and long-wait risk.</div><div class="panel-meta" style="margin-top:6px">Policy: SLA ≤ 15s · Long Wait &gt; 300s · Short Abandon exclusion disabled</div></div>
+    <div style="display:flex;align-items:center;gap:10px"><button class="info-btn" id="infoBtn">ⓘ Metric Definitions</button><div class="subtitle" id="version">Loading backend…</div></div>
+  </div>
+
+  <section class="filters">
+    <div class="field"><label>From</label><input id="fromDate" type="date"></div>
+    <div class="field"><label>Through</label><input id="toDate" type="date"></div>
+    <div class="field"><label for="queueFilter">Queue</label><select id="queueFilter"><option value="">All queues</option></select></div>
+    <button class="apply" id="applyBtn">Apply</button>
+  </section>
+
+  <section class="kpis">
+    <div class="kpi"><div class="kpi-label">Queued Inbound</div><div class="kpi-value" id="queued">—</div><div class="kpi-foot">eligible interactions</div></div>
+    <div class="kpi"><div class="kpi-label">15-Second SLA</div><div class="kpi-value" id="strictSla">—</div><div class="kpi-foot">answered within 15s ÷ queued</div></div>
+    <div class="kpi"><div class="kpi-label">Answered Within 15s</div><div class="kpi-value" id="answeredSla">—</div><div class="kpi-foot">answered within 15s ÷ answered</div></div>
+    <div class="kpi"><div class="kpi-label">Abandon Rate</div><div class="kpi-value" id="abandonRate">—</div><div class="kpi-foot">abandoned ÷ queued</div></div>
+    <div class="kpi"><div class="kpi-label">Average Queue Wait</div><div class="kpi-value" id="avgWait">—</div><div class="kpi-foot">all queued calls</div></div>
+    <div class="kpi"><div class="kpi-label">Longest Queue Wait</div><div class="kpi-value" id="maxWait">—</div><div class="kpi-foot">longest queue wait</div></div>
+    <div class="kpi"><div class="kpi-label">Waits Over 5 Minutes</div><div class="kpi-value" id="longBreaches">—</div><div class="kpi-foot" id="longBreachFoot">—</div></div>
+    <div class="kpi"><div class="kpi-label">Answered After 15s</div><div class="kpi-value" id="overSla">—</div><div class="kpi-foot">answered after 15s</div></div>
+  </section>
+
+  <section class="grid2">
+    <div class="panel">
+      <div class="panel-head"><div><div class="panel-title">Hourly SLA Performance</div><div class="panel-meta">Only hours with queued activity are shown</div></div></div>
+      <div class="hour-grid" id="hourGrid"></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><div><div class="panel-title">Service Risk Summary</div><div class="panel-meta">Fastest way to spot where service is breaking down</div></div></div>
+      <div class="insights" id="insights"></div>
+    </div>
+  </section>
+
+
+  <section class="panel" style="margin-bottom:18px">
+    <div class="panel-head">
+      <div><div class="panel-title">Answered After SLA by Agent</div>
+      <div class="panel-meta">Who ultimately answered calls after the 15-second queue SLA had already elapsed.</div></div>
+    </div>
+    <div class="queue-wrap"><table>
+      <thead><tr><th>Agent</th><th>Answered</th><th>After 15s</th><th>After 15s %</th><th>Avg Queue Wait</th><th>Longest Queue Wait</th></tr></thead>
+      <tbody id="agentSlaBody"></tbody>
+    </table></div>
+    <div class="note">This is attribution, not causation. Queue wait is measured before answer, so the agent listed is the person who ultimately answered a call that was already beyond the SLA timer.</div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><div><div class="panel-title">Queue SLA Performance</div><div class="panel-meta" id="queueMeta">Loading…</div></div></div>
+    <div class="queue-wrap">
+      <table>
+        <thead><tr>
+          <th data-sort="queue_name">Queue</th>
+          <th data-sort="queued_inbound">Queued</th>
+          <th data-sort="answered">Answered</th>
+          <th data-sort="abandoned">Abandoned</th>
+          <th data-sort="strict_sla_percent">15-Second SLA</th>
+          <th data-sort="answered_within_sla_percent">Answered Within 15s</th>
+          <th data-sort="abandon_rate">Abandon %</th>
+          <th data-sort="avg_wait_seconds">Average Queue Wait</th>
+          <th data-sort="max_wait_seconds">Longest Queue Wait</th>
+          <th data-sort="long_wait_breach_percent">% Waiting Over 5 Minutes</th>
+        </tr></thead>
+        <tbody id="queueBody"></tbody>
+      </table>
+    </div>
+    <div class="note">Policy thresholds are fixed in this dashboard: 15-second SLA, 300-second long-wait threshold, and no short-abandon exclusion. Other queued outcomes are included in the reported abandoned count.</div>
+  </section>
+</main>
+
+<div class="modal-backdrop" id="modal">
+  <div class="modal-card">
+    <div class="modal-head"><div><div class="modal-title">Service / SLA Metric Definitions</div><div class="subtitle">How this dashboard calculates queue service performance.</div></div><button class="modal-close" id="closeBtn">×</button></div>
+    <div class="defs">
+      <div class="def"><strong>Eligible / Queued Inbound</strong><p>Inbound interactions with a stored task-level queue name.</p></div>
+      <div class="def"><strong>Strict SLA %</strong><p>Calls answered within the fixed 15-second SLA target divided by all queued calls calls.</p><span class="formula">Answered Within 15s ÷ Queued Inbound</span></div>
+      <div class="def"><strong>Answered Within 15s</strong><p>Of the calls that were eventually answered, the percentage answered within 15 seconds.</p><span class="formula">Answered Within 15s ÷ Answered Calls</span></div>
+      <div class="def"><strong>Adjusted SLA %</strong><p>Strict SLA with configured short abandons removed from the denominator. When Short Abandon is 0, no calls are excluded.</p></div>
+      <div class="def"><strong>Waits Over 5 Minutes</strong><p>The number of queued calls that waited more than 5 minutes, whether they were eventually answered or abandoned.</p></div><div class="def"><strong>Reported Abandoned</strong><p>For this dashboard, queued interactions that are neither answered nor explicitly abandoned are folded into the abandoned count. The API still keeps raw abandoned and other-outcome counts separately for auditability.</p><span class="formula">Reported Abandoned = Raw Abandoned + Other Outcomes</span></div>
+      <div class="def"><strong>Average Queue Wait</strong><p>The average amount of time callers spent waiting in queue.</p></div><div class="def"><strong>Longest Queue Wait</strong><p>The longest queue wait seen during the selected reporting period.</p></div>
+    </div>
+  </div>
+</div>
+
+<script>
+async function loadQueueOptions(){
+  const sel=$('queueFilter');
+  if(!sel)return;
+  const previous=sel.value;
+  const p=new URLSearchParams();
+  let f=null,t=null;
+  if(typeof localStart==='function'){f=localStart($('fromDate').value);t=localAfter($('toDate').value);}
+  else if(typeof localDayStartMs==='function'){f=localDayStartMs($('fromDate').value);t=localDayAfterMs($('toDate').value);}
+  if(f!==null)p.set('from_ms',f);
+  if(t!==null)p.set('to_ms',t);
+  try{
+    const r=await fetch('/api/dashboard/queues?'+p.toString());
+    if(!r.ok)throw new Error(`HTTP ${r.status}`);
+    const d=await r.json();
+    sel.innerHTML='<option value="">All queues</option>'+(d.queues||[]).map(q=>`<option value="${String(q).replaceAll('"','&quot;')}">${q}</option>`).join('');
+    if([...sel.options].some(o=>o.value===previous))sel.value=previous;
+  }catch(e){console.warn('Queue list failed',e)}
+}
+
+const $=id=>document.getElementById(id);
+
+
+async function refreshFreshData(){
+  const dot=document.getElementById('healthDot');
+  const label=document.getElementById('healthLabel');
+  const freshness=document.getElementById('healthFreshness');
+  const updated=document.getElementById('healthUpdated');
+
+  if(dot) dot.className='health-dot health-delayed';
+  if(label) label.textContent='Collector: Refreshing…';
+  if(freshness) freshness.textContent='Pulling recent WxCC data';
+  if(updated) updated.textContent='';
+
+  try{
+    const res=await fetch('/api/collector/refresh?lookback_minutes=120&min_interval_minutes=5',{
+      method:'POST'
+    });
+    if(!res.ok){
+      throw new Error(`${res.status} ${await res.text()}`);
+    }
+    return await res.json();
+  }catch(err){
+    console.warn('Fresh data pull failed:',err);
+    return {success:false,error:String(err)};
+  }
+}
+
+async function loadHealthStatus(){
+  const dot=document.getElementById('healthDot');
+  const label=document.getElementById('healthLabel');
+  const freshness=document.getElementById('healthFreshness');
+  const updated=document.getElementById('healthUpdated');
+  if(!dot||!label)return;
+  try{
+    const res=await fetch('/api/dashboard/health-status');
+    if(!res.ok)throw new Error(`${res.status} ${res.statusText}`);
+    const h=await res.json();
+    const c=h.collector||{},d=h.data||{};
+    dot.className=`health-dot health-${c.status||h.status||'no_data'}`;
+    const names={healthy:'Healthy',delayed:'Delayed',stale:'Stale',error:'Error',no_runs:'No runs',no_data:'No data'};
+    label.textContent=`Collector: ${names[c.status||h.status]||c.status||h.status}`;
+    freshness.textContent=c.age_minutes==null?'No successful collector run':`Last successful run: ${c.age_minutes} min ago`;
+    if(d.newest_data_ms||h.newest_data_ms){
+      updated.textContent=`Data through: ${new Date(Number(d.newest_data_ms||h.newest_data_ms)).toLocaleString()}`;
+    }else{
+      updated.textContent='Data through: —';
+    }
+  }catch(e){
+    dot.className='health-dot health-stale';
+    label.textContent='Data status: Unavailable';
+    freshness.textContent='Could not load health status';
+    updated.textContent='';
+  }
+}
+
+let data=null,sortKey='strict_sla_percent',sortDir=1;
+
+function localStart(s){if(!s)return null;const[y,m,d]=s.split('-').map(Number);return new Date(y,m-1,d,0,0,0,0).getTime()}
+function localAfter(s){if(!s)return null;const[y,m,d]=s.split('-').map(Number);return new Date(y,m-1,d+1,0,0,0,0).getTime()}
+function setDefaults(){
+  const now=new Date(),from=new Date(now);
+  from.setDate(now.getDate()-6);
+  const localDate=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  $('fromDate').value=localDate(from);
+  $('toDate').value=localDate(now);
+}
+function apiUrl(){
+  const p=new URLSearchParams();
+  const f=localStart($('fromDate').value),t=localAfter($('toDate').value);
+  if(f!==null)p.set('from_ms',f);if(t!==null)p.set('to_ms',t);
+  p.set('timezone',Intl.DateTimeFormat().resolvedOptions().timeZone||'America/Detroit');
+    const qf=$('queueFilter')?.value;if(qf)p.set('queue_name',qf);
+  return '/api/dashboard/service-sla?'+p.toString();
+}
+function pct(n){return `${Number(n||0).toFixed(2)}%`}
+function wait(s){s=Number(s||0);if(s<60)return `${s.toFixed(1)}s`;const m=Math.floor(s/60),r=Math.round(s%60);return `${m}m ${r}s`}
+function esc(v){return String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;')}
+function classForSla(n){n=Number(n||0);return n>=80?'good':n>=60?'warn':'bad'}
+
+function renderOverview(o){
+  $('queued').textContent=o.queued_inbound;
+  $('strictSla').textContent=pct(o.strict_sla_percent);
+  $('answeredSla').textContent=pct(o.answered_within_sla_percent);
+  $('abandonRate').textContent=pct(o.abandon_rate);
+  $('avgWait').textContent=wait(o.avg_wait_seconds);
+  $('maxWait').textContent=wait(o.max_wait_seconds);
+  $('longBreaches').textContent=o.long_wait_breaches;
+  $('longBreachFoot').textContent=pct(o.long_wait_breach_percent)+' of queued calls';
+  $('overSla').textContent=o.answered_over_sla;
+}
+
+function renderHours(rows){
+  const active=(rows||[]).filter(r=>Number(r.queued_inbound||0)>0);
+  $('hourGrid').innerHTML=active.map(r=>{
+    const sla=Number(r.strict_sla_percent||0);
+    const abandon=Number(r.abandon_rate||0);
+    const longWait=Number(r.long_wait_breaches||0);
+    const cls=classForSla(sla);
+    return `<div class="hour-card ${cls}">
+      <strong>${esc(r.label)}</strong>
+      <span>${r.queued_inbound} queued · ${r.answered} answered · ${r.abandoned} abandoned</span>
+      <span>15-Second SLA: ${pct(sla)}</span>
+      <span>Abandon: ${pct(abandon)} · Over 5m: ${longWait}</span>
+    </div>`;
+  }).join('') || '<div class="message" style="grid-column:1/-1">No queued activity in the selected period.</div>';
+}
+
+function renderInsights(o){
+  const items=[
+    ['Lowest 15-Second SLA Queue',o.worst_sla_queue?`${o.worst_sla_queue.queue_name} · ${pct(o.worst_sla_queue.strict_sla_percent)}`:'—'],
+    ['Highest Abandon Rate Queue',o.highest_abandon_queue?`${o.highest_abandon_queue.queue_name} · ${pct(o.highest_abandon_queue.abandon_rate)}`:'—'],
+    ['Longest Queue Wait',o.longest_wait_queue?`${o.longest_wait_queue.queue_name} · ${wait(o.longest_wait_queue.max_wait_seconds)}`:'—'],
+    ['Answered Within 15s',`${o.answered_within_sla} of ${o.answered} answered calls`],
+    ['Answered After 15s',`${o.answered_over_sla} calls`],
+    ['Abandoned After 15s',`${o.abandoned_over_sla} calls`],
+  ];
+  $('insights').innerHTML=items.map(([a,b])=>`<div class="insight"><strong>${esc(a)}</strong><span>${esc(b)}</span></div>`).join('');
+}
+
+
+function renderAgentSla(rows){
+  const body=$('agentSlaBody');
+  const visible=(rows||[]).filter(r=>Number(r.answered_calls||0)>0);
+  body.innerHTML=visible.map(r=>`<tr>
+    <td class="queue-name">${esc(r.agent_name||'Unassigned / Unknown')}</td>
+    <td>${Number(r.answered_calls||0)}</td>
+    <td>${Number(r.answered_after_sla||0)}</td>
+    <td>${pct(r.answered_after_sla_percent)}</td>
+    <td>${wait(r.avg_queue_wait_seconds)}</td>
+    <td>${wait(r.max_queue_wait_seconds)}</td>
+  </tr>`).join('')||'<tr><td colspan="6" style="text-align:center;color:#667788">No answered calls in this period.</td></tr>';
+}
+
+function renderQueues(){
+  const rows=[...(data?.queues||[])].sort((a,b)=>{
+    const av=a[sortKey],bv=b[sortKey];
+    if(typeof av==='string'||typeof bv==='string')return String(av??'').localeCompare(String(bv??''))*sortDir;
+    return (Number(av||0)-Number(bv||0))*sortDir;
+  });
+  $('queueMeta').textContent=`${rows.length} queues · SLA target ${data.thresholds.sla_seconds}s · Long wait ${data.thresholds.long_wait_seconds}s`;
+  $('queueBody').innerHTML=rows.map(r=>{
+    const cls=classForSla(r.strict_sla_percent);
+    return `<tr>
+      <td class="queue-name"><span class="pill ${cls}">${esc(r.queue_name)}</span></td>
+      <td>${r.queued_inbound}</td><td>${r.answered}</td><td>${r.abandoned}</td>
+      <td>${pct(r.strict_sla_percent)}</td><td>${pct(r.answered_within_sla_percent)}</td>
+      <td>${pct(r.abandon_rate)}</td><td>${wait(r.avg_wait_seconds)}</td><td>${wait(r.max_wait_seconds)}</td>
+      <td>${pct(r.long_wait_breach_percent)}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function load(){
+  $('page').classList.add('loading');
+  try{
+    const r=await fetch(apiUrl());if(!r.ok)throw new Error(`HTTP ${r.status}`);
+    data=await r.json();
+    $('version').textContent=`Backend v${data.backend_version||'8.5.8'}`;
+    renderOverview(data.overview);
+    renderHours(data.hourly);
+    renderInsights(data.overview);
+    renderAgentSla(data.agent_sla);
+    renderQueues();
+  }catch(e){
+    $('version').textContent='Backend unavailable';
+    $('hourGrid').innerHTML=`<div class="message" style="grid-column:1/-1">Could not load hourly SLA data: ${esc(e.message)}</div>`;
+    $('insights').innerHTML=`<div class="message">Could not load Service / SLA report: ${esc(e.message)}</div>`;
+  }finally{$('page').classList.remove('loading')}
+}
+document.querySelectorAll('th[data-sort]').forEach(th=>th.addEventListener('click',()=>{const k=th.dataset.sort;if(sortKey===k)sortDir*=-1;else{sortKey=k;sortDir=(k==='queue_name'?1:1)}renderQueues()}));
+$('applyBtn').addEventListener('click',async()=>{await loadQueueOptions();await load();});
+$('queueFilter').addEventListener('change',load);
+const modal=$('modal');$('infoBtn').addEventListener('click',()=>modal.classList.add('open'));$('closeBtn').addEventListener('click',()=>modal.classList.remove('open'));modal.addEventListener('click',e=>{if(e.target===modal)modal.classList.remove('open')});document.addEventListener('keydown',e=>{if(e.key==='Escape')modal.classList.remove('open')});
+setDefaults();
+(async()=>{
+  await refreshFreshData();
+  await loadQueueOptions();
+    await load();
+  await loadHealthStatus();
+})();
+</script>
+</body>
+</html>
+    """
+
+
+
+@app.get("/missed-callbacks", response_class=HTMLResponse)
+def missed_callbacks_page():
+    return r"""
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BHS Corrugated | Missed Calls & Callbacks</title>
+<style>
+:root{--bg:#f4f7fa;--panel:#fff;--ink:#12263a;--muted:#667788;--line:#d8e2ec;--brand:#0a5fa8;--brand-dark:#003f73;--soft:#e8f2fb;--bad:#b42318;--badbg:#fff0ee;--warn:#9a6700;--warnbg:#fff7dd;--shadow:0 7px 24px rgba(0,63,115,.08)}
+*{box-sizing:border-box}body{margin:0;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--ink)}
+button,input{font:inherit}.topbar{height:66px;display:flex;align-items:center;justify-content:space-between;padding:0 28px;background:#063b66;color:#fff;position:sticky;top:0;z-index:10}
+.brand{display:flex;gap:12px;align-items:center}.mark{width:34px;height:34px;display:grid;place-items:center;border-radius:10px;background:#0a6fb9;font-weight:900}.brand-title{font-weight:800}.brand-sub{font-size:12px;color:#c9dbea}
+.nav{display:flex;gap:18px}.nav a{color:#d3e4f2;text-decoration:none;font-size:13px}.nav a.active{color:white;font-weight:800}
+.page{max-width:1500px;margin:auto;padding:28px}.heading-row{display:flex;justify-content:space-between;align-items:flex-end;gap:18px;flex-wrap:wrap;margin-bottom:20px}
+h1{margin:0;font-size:30px}.subtitle{margin-top:5px;color:var(--muted);font-size:14px}.policy{margin-top:6px;color:var(--muted);font-size:12px}
+.filters{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;display:grid;grid-template-columns:minmax(160px,1fr) minmax(160px,1fr) auto;gap:12px;align-items:end;box-shadow:var(--shadow);margin-bottom:18px}
+.field label{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.07em;font-weight:800;color:var(--muted);margin-bottom:6px}
+input{width:100%;border:1px solid var(--line);border-radius:10px;padding:10px 11px;background:#fff}.btn{border:0;border-radius:10px;padding:11px 16px;background:var(--brand);color:#fff;font-weight:800;cursor:pointer}.btn:hover{filter:brightness(.96)}.btn:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid rgba(10,95,168,.22);outline-offset:2px}
+.kpis{display:grid;grid-template-columns:repeat(6,minmax(140px,1fr));gap:12px;margin-bottom:18px}.kpi{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;box-shadow:var(--shadow)}
+.kpi-label{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:800}.kpi-value{font-size:28px;font-weight:850;margin-top:8px}.kpi-foot{font-size:11px;color:var(--muted);margin-top:3px}
+.grid{display:grid;grid-template-columns:1.1fr .9fr;gap:18px;margin-bottom:18px}.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow);overflow:hidden}.panel-head{padding:16px 18px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:12px;align-items:center}.panel-title{font-weight:850}.panel-meta{font-size:12px;color:var(--muted)}
+.panel-body{padding:16px 18px}.trend{display:flex;align-items:end;gap:10px;height:220px;border-bottom:1px solid var(--line);padding:16px 6px 0}.barwrap{flex:1;min-width:26px;text-align:center}.bar{width:100%;background:#dbeee3;border-radius:8px 8px 0 0;position:relative;min-height:2px}.bar.missed{background:#f4c7c3}.barlabel{font-size:11px;color:var(--muted);margin-top:6px}.barvalue{font-size:11px;font-weight:800;margin-bottom:4px}
+.risk-row{display:grid;grid-template-columns:1fr auto;gap:12px;padding:12px 0;border-bottom:1px solid var(--line)}.risk-row:last-child{border-bottom:0}.risk-name{font-weight:750}.risk-value{font-weight:850}.bad{color:var(--bad)}.good{color:var(--brand-dark)}
+.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:8px 12px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}th:first-child,td:first-child{text-align:left}th{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);background:#f8fafc}
+.pill{display:inline-flex;border-radius:999px;padding:4px 8px;font-size:11px;font-weight:800}.pill.bad{background:var(--badbg);color:var(--bad)}.pill.good{background:var(--soft);color:var(--brand-dark)}
+.note{font-size:12px;line-height:1.55;color:var(--muted);padding:14px 18px;border-top:1px solid var(--line)}.empty{color:var(--muted);padding:22px;text-align:center}.error{padding:20px;color:var(--bad)}
+.modal{display:none;position:fixed;inset:0;background:rgba(15,30,22,.45);z-index:20;align-items:center;justify-content:center;padding:20px}.modal.open{display:flex}.modal-card{width:min(760px,100%);max-height:85vh;overflow:auto;background:#fff;border-radius:18px;padding:22px}.modal-head{display:flex;justify-content:space-between;gap:12px}.close{border:0;background:none;font-size:24px;cursor:pointer}.def{padding:12px 0;border-bottom:1px solid var(--line)}.def strong{display:block;margin-bottom:4px}.def p{margin:0;color:var(--muted);font-size:13px;line-height:1.5}
+@media(max-width:1100px){.kpis{grid-template-columns:repeat(4,1fr)}.grid{grid-template-columns:1fr}}@media(max-width:700px){.kpis{grid-template-columns:repeat(2,1fr)}.filters{grid-template-columns:1fr}.page{padding:18px}.nav{display:none}}
+.bhs-logo-wrap{margin-left:12px;background:#fff;border-radius:8px;padding:4px 8px;display:flex;align-items:center;justify-content:center;flex:0 0 auto;min-height:46px}.bhs-header-logo{display:block;height:40px;width:auto;max-width:118px;object-fit:contain}@media(max-width:700px){.bhs-logo-wrap{margin-left:auto;padding:3px 6px;min-height:40px}.bhs-header-logo{height:34px;max-width:94px}}.health-strip{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin-bottom:14px;box-shadow:var(--shadow)}.health-left{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.health-dot{width:9px;height:9px;border-radius:50%;display:inline-block}.health-healthy{background:#2e8b57}.health-delayed{background:#d59b00}.health-stale{background:#c0392b}.health-error{background:#c0392b}.health-no_runs{background:#8a98a6}.health-no_data{background:#8a98a6}.health-label{font-size:12px;font-weight:850}.health-meta{font-size:11px;color:var(--muted)}
+/* =========================
+   V8.7.0 Modern UI Refresh
+   Presentation-only overrides
+   ========================= */
+:root{
+  --surface:#ffffff;
+  --surface-soft:rgba(255,255,255,.72);
+  --surface-tint:#f8fbfd;
+  --navy:#07395f;
+  --navy-2:#0b4e7f;
+  --blue:#0b6fb8;
+  --blue-soft:#eaf5fc;
+  --steel:#e7edf2;
+  --text:#14283a;
+  --muted-2:#718294;
+  --radius-lg:22px;
+  --radius-md:16px;
+  --shadow-soft:0 14px 34px rgba(11,55,88,.07);
+  --shadow-hover:0 18px 42px rgba(11,55,88,.12);
+}
+body{
+  background:
+    radial-gradient(circle at 5% 0%, rgba(11,111,184,.08), transparent 28rem),
+    linear-gradient(180deg,#f8fbfd 0%,#f3f7fa 100%);
+  color:var(--text);
+}
+.topbar{
+  height:72px;
+  padding:0 30px;
+  background:linear-gradient(100deg,#062f51 0%,#074b79 100%);
+  box-shadow:0 8px 28px rgba(4,44,75,.16);
+  border-bottom:1px solid rgba(255,255,255,.08);
+  backdrop-filter:blur(14px);
+}
+.brand-title{font-size:15px;letter-spacing:.01em}
+.brand-sub{color:#c8dbea;letter-spacing:.02em}
+.nav{
+  gap:6px;
+  padding:5px;
+  border:1px solid rgba(255,255,255,.10);
+  background:rgba(255,255,255,.06);
+  border-radius:999px;
+}
+.nav a{
+  padding:8px 12px;
+  border-radius:999px;
+  color:#d9e9f5;
+  transition:background .18s ease,color .18s ease,transform .18s ease;
+}
+.nav a:hover{
+  background:rgba(255,255,255,.10);
+  color:#fff;
+  transform:translateY(-1px);
+}
+.nav a.active{
+  color:#07395f;
+  background:#fff;
+  box-shadow:0 5px 14px rgba(0,0,0,.10);
+  font-weight:850;
+}
+.bhs-logo-wrap{
+  border-radius:12px;
+  border:1px solid rgba(255,255,255,.22);
+  box-shadow:0 5px 14px rgba(0,0,0,.10);
+}
+.page{
+  max-width:1540px;
+  padding:34px 34px 46px;
+}
+.heading-row{
+  align-items:center;
+  padding:4px 2px 6px;
+  margin-bottom:18px;
+}
+h1{
+  font-size:32px;
+  line-height:1.15;
+  letter-spacing:-.035em;
+  color:#10283b;
+}
+.subtitle{
+  font-size:14px;
+  margin-top:8px;
+  color:#65798a;
+}
+.policy{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  margin-top:10px;
+  padding:6px 10px;
+  border-radius:999px;
+  background:rgba(11,111,184,.07);
+  color:#527086;
+}
+.health-strip{
+  border:0;
+  border-radius:999px;
+  background:rgba(255,255,255,.82);
+  box-shadow:none;
+  padding:10px 16px;
+  border:1px solid rgba(109,139,162,.16);
+  backdrop-filter:blur(12px);
+}
+.health-dot{
+  box-shadow:0 0 0 4px rgba(46,139,87,.08);
+}
+.filters{
+  border:0;
+  border-radius:18px;
+  padding:12px;
+  gap:10px;
+  background:rgba(255,255,255,.78);
+  box-shadow:0 8px 24px rgba(9,57,91,.06);
+  backdrop-filter:blur(14px);
+  border:1px solid rgba(99,134,160,.14);
+}
+.field label{
+  margin:0 0 5px 4px;
+  font-size:10px;
+  letter-spacing:.10em;
+}
+input,select{
+  min-height:42px;
+  border:1px solid #dce6ed;
+  border-radius:12px;
+  background:#fbfdff;
+  box-shadow:inset 0 1px 2px rgba(16,40,59,.03);
+}
+input:focus,select:focus{
+  border-color:#8fc4e8;
+  box-shadow:0 0 0 4px rgba(11,111,184,.08);
+}
+.btn,.apply,.info-btn{
+  border-radius:12px;
+  box-shadow:0 7px 16px rgba(11,111,184,.14);
+  transition:transform .18s ease,box-shadow .18s ease,filter .18s ease;
+}
+.btn:hover,.apply:hover,.info-btn:hover{
+  transform:translateY(-1px);
+  box-shadow:0 10px 22px rgba(11,111,184,.18);
+}
+.kpis{
+  gap:10px;
+  margin:22px 0 28px;
+}
+.kpi{
+  position:relative;
+  overflow:hidden;
+  border:0;
+  border-radius:18px;
+  padding:17px 16px 16px;
+  background:rgba(255,255,255,.82);
+  box-shadow:none;
+  border:1px solid rgba(104,137,160,.12);
+  transition:transform .18s ease,box-shadow .18s ease,background .18s ease;
+}
+.kpi:before{
+  content:"";
+  position:absolute;
+  left:0;
+  top:0;
+  bottom:0;
+  width:3px;
+  background:linear-gradient(180deg,#0b6fb8,#65b7e8);
+  opacity:.85;
+}
+.kpi:hover{
+  transform:translateY(-2px);
+  background:#fff;
+  box-shadow:var(--shadow-soft);
+}
+.kpi-label{
+  font-size:10px;
+  letter-spacing:.09em;
+  color:#708293;
+}
+.kpi-value{
+  font-size:29px;
+  letter-spacing:-.035em;
+  margin-top:9px;
+  color:#102b40;
+}
+.kpi-foot{
+  margin-top:5px;
+  line-height:1.35;
+  color:#80909d;
+}
+.grid,.grid2{
+  gap:22px;
+  margin-bottom:26px;
+}
+.panel{
+  border:0;
+  border-radius:var(--radius-lg);
+  background:rgba(255,255,255,.74);
+  box-shadow:none;
+  overflow:hidden;
+  border:1px solid rgba(100,135,160,.10);
+  backdrop-filter:blur(12px);
+  transition:box-shadow .18s ease,background .18s ease;
+}
+.panel:hover{
+  background:rgba(255,255,255,.88);
+  box-shadow:0 14px 36px rgba(8,55,89,.055);
+}
+.panel-head{
+  border-bottom:0;
+  padding:20px 22px 10px;
+  align-items:flex-start;
+}
+.panel-title{
+  font-size:16px;
+  letter-spacing:-.015em;
+  color:#173247;
+}
+.panel-title:after{
+  content:"";
+  display:block;
+  width:32px;
+  height:3px;
+  margin-top:9px;
+  border-radius:999px;
+  background:linear-gradient(90deg,#0b6fb8,#6cbce9);
+}
+.panel-meta{
+  margin-top:5px;
+  color:#7c8e9d;
+}
+.panel-body{
+  padding:14px 22px 22px;
+}
+.attention,.staffing-grid{
+  gap:10px;
+}
+.attention-card,.stat,.compare-card,.hour-card,.insight{
+  border:0;
+  border-radius:15px;
+  background:linear-gradient(180deg,#fbfdff,#f7fafc);
+  box-shadow:inset 0 0 0 1px rgba(107,139,160,.10);
+}
+.attention-card,.stat{
+  padding:14px;
+}
+.attention-card:hover,.stat:hover,.compare-card:hover,.hour-card:hover,.insight:hover{
+  background:#fff;
+}
+.attention-label,.stat-name{
+  color:#738696;
+}
+.attention-value,.stat-value{
+  color:#123047;
+  letter-spacing:-.025em;
+}
+.summary-row{
+  padding:11px 0;
+  border-bottom:1px solid rgba(116,144,164,.12);
+}
+.summary-row span{color:#718594}
+.summary-row strong{color:#18364c}
+.table-wrap,.queue-wrap,.heatmap-wrap{
+  border-radius:16px;
+  overflow:auto;
+}
+table{
+  border-collapse:separate;
+  border-spacing:0;
+}
+th{
+  background:#f4f8fb;
+  color:#5f7485;
+  font-size:10px;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+}
+th,td{
+  border-color:rgba(113,143,165,.12)!important;
+}
+tbody tr{
+  transition:background .14s ease;
+}
+tbody tr:hover{
+  background:#f7fbfe;
+}
+.pill{
+  border-radius:999px;
+  border:0;
+  background:#eef5fa;
+  color:#47677e;
+}
+.note,.flag,.warning{
+  border:0;
+  border-radius:14px;
+  box-shadow:inset 0 0 0 1px rgba(117,145,164,.10);
+}
+.barwrap,.trend-track{
+  border-radius:999px;
+  background:#eaf0f4;
+  overflow:hidden;
+}
+.bar,.trend-fill{
+  border-radius:999px;
+}
+.modal-card{
+  border-radius:22px;
+  box-shadow:0 28px 70px rgba(4,37,62,.22);
+}
+@media(max-width:1100px){
+  .nav{border-radius:18px}
+}
+@media(max-width:700px){
+  .page{padding:22px 16px 36px}
+  h1{font-size:27px}
+  .health-strip{border-radius:16px}
+  .filters{border-radius:16px}
+  .kpi{border-radius:16px}
+  .panel{border-radius:18px}
+}
+
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div class="brand"><div><div class="brand-title">BHS Corrugated</div><div class="brand-sub">Contact Center Analytics</div></div></div>
+  <nav class="nav"><a href="/executive-overview">Executive</a><a href="/staffing">Staffing</a><a href="/call-demand">Call Demand</a><a href="/service-sla">Service / SLA</a><a class="active" href="/missed-callbacks">Missed & Callbacks</a><a href="/inbound-outbound">Call Activity</a><a href="/auth/logout">Sign out</a></nav><div class="bhs-logo-wrap"><img class="bhs-header-logo" src="/static/bhs_logo.png" alt="BHS Corrugated logo"></div>
+</div>
+<main class="page">
+  <section class="health-strip">
+    <div class="health-left">
+      <span id="healthDot" class="health-dot health-no_data"></span>
+      <span id="healthLabel" class="health-label">Data status: Checking…</span>
+      <span id="healthFreshness" class="health-meta"></span>
+    </div>
+    <span id="healthUpdated" class="health-meta"></span>
+  </section>
+
+  <div class="heading-row">
+    <div><h1>Missed Calls & Callbacks</h1><div class="subtitle">Track missed queue calls, native courtesy callback resolution, and still unresolved after 24 hours.</div><div class="policy">Native courtesy callbacks only</div></div>
+    <button class="btn" style="background:#fff;color:var(--brand-dark);border:1px solid var(--line)" onclick="openDefs()">Metric Definitions</button>
+  </div>
+
+  <section class="filters">
+    <div class="field"><label>From</label><input id="fromDate" type="date"></div>
+    <div class="field"><label>To</label><input id="toDate" type="date"></div>
+    <div class="field"><label for="queueFilter">Queue</label><select id="queueFilter" onchange="loadData()"><option value="">All queues</option></select></div>
+    <button class="btn" onclick="reloadWithQueues()">Apply</button>
+  </section>
+
+  <section class="kpis">
+    <div class="kpi"><div class="kpi-label">Queued Calls</div><div id="queued" class="kpi-value">—</div><div class="kpi-foot">inbound calls reaching a queue</div></div>
+    <div class="kpi"><div class="kpi-label">Missed Calls</div><div id="missed" class="kpi-value">—</div><div class="kpi-foot">not connected to an agent</div></div>
+    <div class="kpi"><div class="kpi-label">Missed Call Rate</div><div id="missedRate" class="kpi-value">—</div><div class="kpi-foot">missed ÷ queued</div></div>
+    <div class="kpi"><div class="kpi-label">Missed Calls Called Back</div><div id="resolved" class="kpi-value">—</div><div class="kpi-foot">matched successful native callback</div></div>
+    <div class="kpi"><div class="kpi-label">Missed Calls Called Back %</div><div id="resolutionRate" class="kpi-value">—</div><div class="kpi-foot">called back ÷ missed</div></div>
+    <div class="kpi"><div class="kpi-label">Average Callback Time</div><div id="avgCallback" class="kpi-value">—</div><div class="kpi-foot">time from missed call to callback</div></div>
+  </section>
+
+  <section class="grid">
+    <div class="panel"><div class="panel-head"><div class="panel-title">Daily Missed Call Trend</div><div class="panel-meta">Missed calls by day</div></div><div class="panel-body"><div id="trend" class="trend"></div></div></div>
+    <div class="panel"><div class="panel-head"><div class="panel-title">Follow-Up Summary</div><div class="panel-meta">Native callback resolution</div></div><div id="summary" class="panel-body"></div></div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><div><div class="panel-title">Missed Calls by Queue</div><div class="panel-meta">Missed calls and native callback resolution by queue</div></div></div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Queue</th><th>Queued</th><th>Missed</th><th>Missed Rate</th><th>Missed Calls Called Back</th><th>Called Back %</th></tr></thead>
+      <tbody id="queueRows"></tbody>
+    </table></div>
+    <div class="note">“Missed Calls Called Back” only counts a successful native WxCC courtesy callback matched to the same caller after the missed call. Manual outbound calls are not included yet.</div>
+  </section>
+
+  <section class="panel" style="margin-top:18px">
+    <div class="panel-head"><div><div class="panel-title">Callback Details</div><div class="panel-meta">Validated native callback matches</div></div></div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Queue</th><th>Caller</th><th>Callback Agent</th><th>Team</th><th>Time to Callback</th></tr></thead>
+      <tbody id="callbackRows"></tbody>
+    </table></div>
+  </section>
+</main>
+
+<div id="defs" class="modal" onclick="if(event.target===this)closeDefs()"><div class="modal-card">
+  <div class="modal-head"><div><h2 style="margin:0">Metric Definitions</h2><div class="subtitle">Plain-English reporting definitions</div></div><button class="close" onclick="closeDefs()">×</button></div>
+  <div class="def"><strong>Missed Call</strong><p>A queued inbound call that never connected to an agent.</p></div>
+  <div class="def"><strong>Missed Call Rate</strong><p>The percentage of queued inbound calls that were missed.</p></div>
+  <div class="def"><strong>Missed Calls Called Back</strong><p>The number of missed calls that were later matched to a successful native WxCC courtesy callback.</p></div>
+  <div class="def"><strong>Missed Calls Called Back %</strong><p>The percentage of missed calls that were later called back successfully through a matched native WxCC courtesy callback.</p></div>
+  <div class="def"><strong>Unresolved Missed Call</strong><p>A missed call without a later matched successful native courtesy callback.</p></div>
+  <div class="def"><strong>Unresolved Over 24 Hours</strong><p>An unresolved missed call that has remained unresolved for at least 24 hours as of the reporting reference time.</p></div>
+  <div class="def"><strong>Average Time to Callback</strong><p>Average elapsed time from the missed interaction to the matched successful native callback.</p></div>
+</div></div>
+
+<script>
+async function reloadWithQueues(){await loadQueueOptions();await loadData();}
+
+async function loadQueueOptions(){
+  const sel=$('queueFilter');
+  if(!sel)return;
+  const previous=sel.value;
+  const p=new URLSearchParams();
+  let f=null,t=null;
+  if(typeof localStart==='function'){f=localStart($('fromDate').value);t=localAfter($('toDate').value);}
+  else if(typeof localDayStartMs==='function'){f=localDayStartMs($('fromDate').value);t=localDayAfterMs($('toDate').value);}
+  if(f!==null)p.set('from_ms',f);
+  if(t!==null)p.set('to_ms',t);
+  try{
+    const r=await fetch('/api/dashboard/queues?'+p.toString());
+    if(!r.ok)throw new Error(`HTTP ${r.status}`);
+    const d=await r.json();
+    sel.innerHTML='<option value="">All queues</option>'+(d.queues||[]).map(q=>`<option value="${String(q).replaceAll('"','&quot;')}">${q}</option>`).join('');
+    if([...sel.options].some(o=>o.value===previous))sel.value=previous;
+  }catch(e){console.warn('Queue list failed',e)}
+}
+
+const $=id=>document.getElementById(id);
+
+
+async function refreshFreshData(){
+  const dot=document.getElementById('healthDot');
+  const label=document.getElementById('healthLabel');
+  const freshness=document.getElementById('healthFreshness');
+  const updated=document.getElementById('healthUpdated');
+
+  if(dot) dot.className='health-dot health-delayed';
+  if(label) label.textContent='Collector: Refreshing…';
+  if(freshness) freshness.textContent='Pulling recent WxCC data';
+  if(updated) updated.textContent='';
+
+  try{
+    const res=await fetch('/api/collector/refresh?lookback_minutes=120&min_interval_minutes=5',{
+      method:'POST'
+    });
+    if(!res.ok){
+      throw new Error(`${res.status} ${await res.text()}`);
+    }
+    return await res.json();
+  }catch(err){
+    console.warn('Fresh data pull failed:',err);
+    return {success:false,error:String(err)};
+  }
+}
+
+async function loadHealthStatus(){
+  const dot=document.getElementById('healthDot');
+  const label=document.getElementById('healthLabel');
+  const freshness=document.getElementById('healthFreshness');
+  const updated=document.getElementById('healthUpdated');
+  if(!dot||!label)return;
+  try{
+    const res=await fetch('/api/dashboard/health-status');
+    if(!res.ok)throw new Error(`${res.status} ${res.statusText}`);
+    const h=await res.json();
+    const c=h.collector||{},d=h.data||{};
+    dot.className=`health-dot health-${c.status||h.status||'no_data'}`;
+    const names={healthy:'Healthy',delayed:'Delayed',stale:'Stale',error:'Error',no_runs:'No runs',no_data:'No data'};
+    label.textContent=`Collector: ${names[c.status||h.status]||c.status||h.status}`;
+    freshness.textContent=c.age_minutes==null?'No successful collector run':`Last successful run: ${c.age_minutes} min ago`;
+    if(d.newest_data_ms||h.newest_data_ms){
+      updated.textContent=`Data through: ${new Date(Number(d.newest_data_ms||h.newest_data_ms)).toLocaleString()}`;
+    }else{
+      updated.textContent='Data through: —';
+    }
+  }catch(e){
+    dot.className='health-dot health-stale';
+    label.textContent='Data status: Unavailable';
+    freshness.textContent='Could not load health status';
+    updated.textContent='';
+  }
+}
+
+
+
+async function refreshFreshData(){
+  const dot=document.getElementById('healthDot');
+  const label=document.getElementById('healthLabel');
+  const freshness=document.getElementById('healthFreshness');
+  const updated=document.getElementById('healthUpdated');
+
+  if(dot) dot.className='health-dot health-delayed';
+  if(label) label.textContent='Collector: Refreshing…';
+  if(freshness) freshness.textContent='Pulling recent WxCC data';
+  if(updated) updated.textContent='';
+
+  try{
+    const res=await fetch('/api/collector/refresh?lookback_minutes=120&min_interval_minutes=5',{
+      method:'POST'
+    });
+    if(!res.ok){
+      throw new Error(`${res.status} ${await res.text()}`);
+    }
+    return await res.json();
+  }catch(err){
+    console.warn('Fresh data pull failed:',err);
+    return {success:false,error:String(err)};
+  }
+}
+
+async function loadHealthStatus(){
+  const dot=document.getElementById('healthDot');
+  const label=document.getElementById('healthLabel');
+  const freshness=document.getElementById('healthFreshness');
+  const updated=document.getElementById('healthUpdated');
+  if(!dot||!label)return;
+  try{
+    const res=await fetch('/api/dashboard/health-status');
+    if(!res.ok)throw new Error(`${res.status} ${res.statusText}`);
+    const h=await res.json();
+    const c=h.collector||{},d=h.data||{};
+    dot.className=`health-dot health-${c.status||h.status||'no_data'}`;
+    const names={healthy:'Healthy',delayed:'Delayed',stale:'Stale',error:'Error',no_runs:'No runs',no_data:'No data'};
+    label.textContent=`Collector: ${names[c.status||h.status]||c.status||h.status}`;
+    freshness.textContent=c.age_minutes==null?'No successful collector run':`Last successful run: ${c.age_minutes} min ago`;
+    if(d.newest_data_ms||h.newest_data_ms){
+      updated.textContent=`Data through: ${new Date(Number(d.newest_data_ms||h.newest_data_ms)).toLocaleString()}`;
+    }else{
+      updated.textContent='Data through: —';
+    }
+  }catch(e){
+    dot.className='health-dot health-stale';
+    label.textContent='Data status: Unavailable';
+    freshness.textContent='Could not load health status';
+    updated.textContent='';
+  }
+}
+
+function openDefs(){$('defs').classList.add('open')}function closeDefs(){$('defs').classList.remove('open')}
+function pct(v){return `${Number(v||0).toFixed(1)}%`}
+function duration(sec){
+  sec=Number(sec||0);
+  if(!sec)return '—';
+  if(sec<60)return `${Math.round(sec)}s`;
+  if(sec<3600)return `${Math.floor(sec/60)}m ${Math.round(sec%60)}s`;
+  return `${Math.floor(sec/3600)}h ${Math.round((sec%3600)/60)}m`;
+}
+function phone(v){
+  const d=String(v||'').replace(/\D/g,'');
+  const x=d.length>10?d.slice(-10):d;
+  if(x.length!==10)return v||'—';
+  return `(***) ***-${x.slice(-4)}`;
+}
+function localStart(v){if(!v)return null;return new Date(v+'T00:00:00').getTime()}
+function localAfter(v){if(!v)return null;const d=new Date(v+'T00:00:00');d.setDate(d.getDate()+1);return d.getTime()}
+function setDefaults(){
+  const now=new Date(), from=new Date(now);from.setDate(now.getDate()-6);
+  $('toDate').value=now.toISOString().slice(0,10);
+  $('fromDate').value=from.toISOString().slice(0,10);
+}
+function apiUrl(){
+  const p=new URLSearchParams();
+  const f=localStart($('fromDate').value),t=localAfter($('toDate').value);
+  if(f!==null)p.set('from_ms',f);if(t!==null)p.set('to_ms',t);
+  p.set('timezone',Intl.DateTimeFormat().resolvedOptions().timeZone||'America/Detroit');
+    const qf=$('queueFilter')?.value;if(qf)p.set('queue_name',qf);
+  return '/api/dashboard/missed-callbacks?'+p.toString();
+}
+function renderTrend(rows){
+  const el=$('trend');el.innerHTML='';
+  if(!rows.length){el.innerHTML='<div class="empty">No data for this period.</div>';return}
+  const max=Math.max(...rows.map(r=>r.missed),1);
+  rows.forEach(r=>{
+    const w=document.createElement('div');w.className='barwrap';
+    w.innerHTML=`<div class="barvalue">${r.missed}</div><div class="bar missed" style="height:${Math.max(2,r.missed/max*170)}px"></div><div class="barlabel">${r.date.slice(5)}</div>`;
+    el.appendChild(w);
+  });
+}
+function renderSummary(o){
+  const rows=[
+    ['Missed Calls',`${o.missed} of ${o.queued_inbound} queued`],
+    ['Resolved by Native Callback',`${o.resolved_by_native_callback}`],
+    ['Unresolved Over 24 Hours',`${o.unresolved_over_threshold}`],
+    ['Average Callback Time',duration(o.avg_time_to_native_callback_seconds)]
+  ];
+  $('summary').innerHTML=rows.map(([a,b])=>`<div class="risk-row"><div class="risk-name">${a}</div><div class="risk-value">${b}</div></div>`).join('');
+}
+function renderQueues(rows){
+  $('queueRows').innerHTML=rows.map(r=>`<tr>
+    <td>${r.queue_name}</td><td>${r.queued_inbound}</td><td>${r.missed}</td>
+    <td><span class="pill ${r.missed_rate>20?'bad':'good'}">${pct(r.missed_rate)}</span></td>
+    <td>${r.resolved_by_native_callback}</td><td>${pct(r.native_resolution_rate)}</td>
+  </tr>`).join('')||'<tr><td colspan="6" class="empty">No queue data.</td></tr>';
+}
+function renderMatches(rows){
+  $('callbackRows').innerHTML=rows.map(r=>`<tr>
+    <td>${r.queue_name||'—'}</td><td>${phone(r.caller_number)}</td><td>${r.callback_agent_name||'—'}</td><td>${r.callback_team_name||'—'}</td><td>${duration(r.time_to_callback_seconds)}</td>
+  </tr>`).join('')||'<tr><td colspan="5" class="empty">No missed calls were resolved by a matched native callback in this period.</td></tr>';
+}
+async function loadData(){
+  try{
+    const res=await fetch(apiUrl());if(!res.ok)throw new Error(`${res.status} ${res.statusText}`);
+    const d=await res.json(),o=d.overview;
+    $('queued').textContent=o.queued_inbound;
+    $('missed').textContent=o.missed;
+    $('missedRate').textContent=pct(o.missed_rate);
+    $('resolved').textContent=o.resolved_by_native_callback;
+    $('resolutionRate').textContent=pct(o.native_resolution_rate);
+    $('avgCallback').textContent=duration(o.avg_time_to_native_callback_seconds);
+    renderTrend(d.daily||[]);renderSummary(o);renderQueues(d.queues||[]);renderMatches(d.resolved_matches||[]);
+  }catch(e){$('summary').innerHTML=`<div class="error">Could not load missed/callback data: ${e.message}</div>`}
+}
+setDefaults();
+(async()=>{
+  await refreshFreshData();
+  await loadQueueOptions();
+    await loadData();
+  await loadHealthStatus();
+})();
+</script>
+</body></html>
+"""
+
+
+@app.get("/inbound-outbound", response_class=HTMLResponse)
+def inbound_outbound_page():
+    return r"""
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BHS Corrugated | Call Activity</title>
+<style>
+:root{--bg:#f4f7fa;--panel:#fff;--ink:#12263a;--muted:#667788;--line:#d8e2ec;--brand:#0a5fa8;--brand-dark:#003f73;--soft:#e8f2fb;--bad:#b42318;--badbg:#fff0ee;--warn:#9a6700;--warnbg:#fff7dd;--shadow:0 7px 24px rgba(0,63,115,.08)}
+*{box-sizing:border-box}body{margin:0;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--ink)}
+button,input{font:inherit}.topbar{height:66px;display:flex;align-items:center;justify-content:space-between;padding:0 28px;background:#063b66;color:#fff;position:sticky;top:0;z-index:10}
+.brand{display:flex;gap:12px;align-items:center}.mark{width:34px;height:34px;display:grid;place-items:center;border-radius:10px;background:#0a6fb9;font-weight:900}.brand-title{font-weight:800}.brand-sub{font-size:12px;color:#c9dbea}
+.nav{display:flex;gap:16px;flex-wrap:wrap}.nav a{color:#d3e4f2;text-decoration:none;font-size:13px}.nav a.active{color:white;font-weight:800}
+.page{max-width:1500px;margin:auto;padding:28px}.heading-row{display:flex;justify-content:space-between;align-items:flex-end;gap:18px;flex-wrap:wrap;margin-bottom:20px}
+h1{margin:0;font-size:30px}.subtitle{margin-top:5px;color:var(--muted);font-size:14px}.policy{margin-top:6px;color:var(--muted);font-size:12px}
+.filters{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;display:grid;grid-template-columns:minmax(160px,1fr) minmax(160px,1fr) auto;gap:12px;align-items:end;box-shadow:var(--shadow);margin-bottom:18px}
+.field label{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.07em;font-weight:800;color:var(--muted);margin-bottom:6px}
+input{width:100%;border:1px solid var(--line);border-radius:10px;padding:10px 11px;background:#fff}.btn{border:0;border-radius:10px;padding:11px 16px;background:var(--brand);color:#fff;font-weight:800;cursor:pointer}.btn:hover{filter:brightness(.96)}.btn:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid rgba(10,95,168,.22);outline-offset:2px}
+.kpis{display:grid;grid-template-columns:repeat(8,minmax(120px,1fr));gap:12px;margin-bottom:18px}.kpi{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;box-shadow:var(--shadow)}
+.kpi-label{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:800}.kpi-value{font-size:28px;font-weight:850;margin-top:8px}.kpi-foot{font-size:11px;color:var(--muted);margin-top:3px}
+.grid{display:grid;grid-template-columns:1.15fr .85fr;gap:18px;margin-bottom:18px}.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow);overflow:hidden}.panel-head{padding:16px 18px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:12px;align-items:center}.panel-title{font-weight:850}.panel-meta{font-size:12px;color:var(--muted)}
+.panel-body{padding:16px 18px}.bars{display:block;padding:6px 0}.barwrap{flex:1;min-width:26px;text-align:center}.pair{display:flex;align-items:end;gap:2px;height:92px}.bar{flex:1;border-radius:6px 6px 0 0;min-height:2px}.bar.in{background:#cfe8d8}.bar.out{background:#9fcdb3}.barlabel{font-size:9px;color:var(--muted);margin-top:4px}.day-group{margin-bottom:10px}.day-title{font-size:12px;font-weight:850;margin:2px 0 5px;color:var(--ink)}.day-bars{display:flex;align-items:end;gap:5px;height:125px;border:1px solid var(--line);border-radius:10px;padding:8px 8px 3px;background:#f8fbfd;overflow-x:auto}.date-cell{font-weight:800}.hour-sub{display:block;color:var(--muted);font-size:11px;font-weight:500;margin-top:2px}.barvalue{font-size:9px;color:var(--muted);margin-bottom:2px}
+.compare{display:grid;grid-template-columns:1fr 1fr;gap:12px}.compare-card{border:1px solid var(--line);border-radius:14px;padding:14px}.compare-card h3{font-size:14px;margin:0 0 10px}.metric{display:flex;justify-content:space-between;gap:10px;padding:9px 0;border-bottom:1px solid var(--line)}.metric:last-child{border-bottom:0}.metric span:first-child{color:var(--muted);font-size:12px}.metric strong{font-size:14px}
+.warning{margin-top:12px;padding:12px 14px;background:var(--warnbg);color:#6f4b00;border-radius:12px;font-size:12px;line-height:1.5}
+.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:12px 14px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}th:first-child,td:first-child{text-align:left}th{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);background:#f8fafc}
+.pill{display:inline-flex;border-radius:999px;padding:4px 8px;font-size:11px;font-weight:800}.pill.good{background:var(--soft);color:var(--brand-dark)}.pill.bad{background:var(--badbg);color:var(--bad)}
+.note{font-size:12px;line-height:1.55;color:var(--muted);padding:14px 18px;border-top:1px solid var(--line)}.heatmap-wrap{overflow-x:auto;padding:14px 18px 18px}.heatmap{display:grid;gap:4px;min-width:900px;align-items:stretch}.heat-head{font-size:10px;font-weight:800;color:var(--muted);text-align:center;padding:5px 2px}.heat-date{font-size:11px;font-weight:800;color:var(--ink);display:flex;align-items:center;padding-right:8px;white-space:nowrap}.heat-cell{min-height:48px;border:1px solid var(--line);border-radius:7px;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:4px 3px;font-size:10px;line-height:1.2;cursor:default}.heat-cell strong{font-size:12px}.heat-cell span{color:var(--muted);font-size:9px;margin-top:2px}.heat-empty{background:#f8fafc;color:#a9b3ae}.heat-1{background:#edf7f1}.heat-2{background:#dceee3}.heat-3{background:#c3e1cf}.heat-4{background:#9dceb1}.heat-5{background:#6eb48d;color:#102a1c}.heat-5 span{color:#214d35}.heat-legend{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:11px;color:var(--muted);padding:0 18px 14px}.legend-box{width:18px;height:14px;border:1px solid var(--line);border-radius:4px}.legend-label{margin-right:4px}.empty{color:var(--muted);padding:22px;text-align:center}.error{padding:20px;color:var(--bad)}
+.modal{display:none;position:fixed;inset:0;background:rgba(15,30,22,.45);z-index:20;align-items:center;justify-content:center;padding:20px}.modal.open{display:flex}.modal-card{width:min(760px,100%);max-height:85vh;overflow:auto;background:#fff;border-radius:18px;padding:22px}.modal-head{display:flex;justify-content:space-between;gap:12px}.close{border:0;background:none;font-size:24px;cursor:pointer}.def{padding:12px 0;border-bottom:1px solid var(--line)}.def strong{display:block;margin-bottom:4px}.def p{margin:0;color:var(--muted);font-size:13px;line-height:1.5}
+@media(max-width:1100px){.kpis{grid-template-columns:repeat(4,1fr)}.grid{grid-template-columns:1fr}}@media(max-width:700px){.kpis{grid-template-columns:repeat(2,1fr)}.filters{grid-template-columns:1fr}.page{padding:18px}.nav{display:none}}
+.bhs-logo-wrap{margin-left:12px;background:#fff;border-radius:8px;padding:4px 8px;display:flex;align-items:center;justify-content:center;flex:0 0 auto;min-height:46px}.bhs-header-logo{display:block;height:40px;width:auto;max-width:118px;object-fit:contain}@media(max-width:700px){.bhs-logo-wrap{margin-left:auto;padding:3px 6px;min-height:40px}.bhs-header-logo{height:34px;max-width:94px}}.health-strip{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin-bottom:14px;box-shadow:var(--shadow)}.health-left{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.health-dot{width:9px;height:9px;border-radius:50%;display:inline-block}.health-healthy{background:#2e8b57}.health-delayed{background:#d59b00}.health-stale{background:#c0392b}.health-error{background:#c0392b}.health-no_runs{background:#8a98a6}.health-no_data{background:#8a98a6}.health-label{font-size:12px;font-weight:850}.health-meta{font-size:11px;color:var(--muted)}
+/* =========================
+   V8.7.0 Modern UI Refresh
+   Presentation-only overrides
+   ========================= */
+:root{
+  --surface:#ffffff;
+  --surface-soft:rgba(255,255,255,.72);
+  --surface-tint:#f8fbfd;
+  --navy:#07395f;
+  --navy-2:#0b4e7f;
+  --blue:#0b6fb8;
+  --blue-soft:#eaf5fc;
+  --steel:#e7edf2;
+  --text:#14283a;
+  --muted-2:#718294;
+  --radius-lg:22px;
+  --radius-md:16px;
+  --shadow-soft:0 14px 34px rgba(11,55,88,.07);
+  --shadow-hover:0 18px 42px rgba(11,55,88,.12);
+}
+body{
+  background:
+    radial-gradient(circle at 5% 0%, rgba(11,111,184,.08), transparent 28rem),
+    linear-gradient(180deg,#f8fbfd 0%,#f3f7fa 100%);
+  color:var(--text);
+}
+.topbar{
+  height:72px;
+  padding:0 30px;
+  background:linear-gradient(100deg,#062f51 0%,#074b79 100%);
+  box-shadow:0 8px 28px rgba(4,44,75,.16);
+  border-bottom:1px solid rgba(255,255,255,.08);
+  backdrop-filter:blur(14px);
+}
+.brand-title{font-size:15px;letter-spacing:.01em}
+.brand-sub{color:#c8dbea;letter-spacing:.02em}
+.nav{
+  gap:6px;
+  padding:5px;
+  border:1px solid rgba(255,255,255,.10);
+  background:rgba(255,255,255,.06);
+  border-radius:999px;
+}
+.nav a{
+  padding:8px 12px;
+  border-radius:999px;
+  color:#d9e9f5;
+  transition:background .18s ease,color .18s ease,transform .18s ease;
+}
+.nav a:hover{
+  background:rgba(255,255,255,.10);
+  color:#fff;
+  transform:translateY(-1px);
+}
+.nav a.active{
+  color:#07395f;
+  background:#fff;
+  box-shadow:0 5px 14px rgba(0,0,0,.10);
+  font-weight:850;
+}
+.bhs-logo-wrap{
+  border-radius:12px;
+  border:1px solid rgba(255,255,255,.22);
+  box-shadow:0 5px 14px rgba(0,0,0,.10);
+}
+.page{
+  max-width:1540px;
+  padding:34px 34px 46px;
+}
+.heading-row{
+  align-items:center;
+  padding:4px 2px 6px;
+  margin-bottom:18px;
+}
+h1{
+  font-size:32px;
+  line-height:1.15;
+  letter-spacing:-.035em;
+  color:#10283b;
+}
+.subtitle{
+  font-size:14px;
+  margin-top:8px;
+  color:#65798a;
+}
+.policy{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  margin-top:10px;
+  padding:6px 10px;
+  border-radius:999px;
+  background:rgba(11,111,184,.07);
+  color:#527086;
+}
+.health-strip{
+  border:0;
+  border-radius:999px;
+  background:rgba(255,255,255,.82);
+  box-shadow:none;
+  padding:10px 16px;
+  border:1px solid rgba(109,139,162,.16);
+  backdrop-filter:blur(12px);
+}
+.health-dot{
+  box-shadow:0 0 0 4px rgba(46,139,87,.08);
+}
+.filters{
+  border:0;
+  border-radius:18px;
+  padding:12px;
+  gap:10px;
+  background:rgba(255,255,255,.78);
+  box-shadow:0 8px 24px rgba(9,57,91,.06);
+  backdrop-filter:blur(14px);
+  border:1px solid rgba(99,134,160,.14);
+}
+.field label{
+  margin:0 0 5px 4px;
+  font-size:10px;
+  letter-spacing:.10em;
+}
+input,select{
+  min-height:42px;
+  border:1px solid #dce6ed;
+  border-radius:12px;
+  background:#fbfdff;
+  box-shadow:inset 0 1px 2px rgba(16,40,59,.03);
+}
+input:focus,select:focus{
+  border-color:#8fc4e8;
+  box-shadow:0 0 0 4px rgba(11,111,184,.08);
+}
+.btn,.apply,.info-btn{
+  border-radius:12px;
+  box-shadow:0 7px 16px rgba(11,111,184,.14);
+  transition:transform .18s ease,box-shadow .18s ease,filter .18s ease;
+}
+.btn:hover,.apply:hover,.info-btn:hover{
+  transform:translateY(-1px);
+  box-shadow:0 10px 22px rgba(11,111,184,.18);
+}
+.kpis{
+  gap:10px;
+  margin:22px 0 28px;
+}
+.kpi{
+  position:relative;
+  overflow:hidden;
+  border:0;
+  border-radius:18px;
+  padding:17px 16px 16px;
+  background:rgba(255,255,255,.82);
+  box-shadow:none;
+  border:1px solid rgba(104,137,160,.12);
+  transition:transform .18s ease,box-shadow .18s ease,background .18s ease;
+}
+.kpi:before{
+  content:"";
+  position:absolute;
+  left:0;
+  top:0;
+  bottom:0;
+  width:3px;
+  background:linear-gradient(180deg,#0b6fb8,#65b7e8);
+  opacity:.85;
+}
+.kpi:hover{
+  transform:translateY(-2px);
+  background:#fff;
+  box-shadow:var(--shadow-soft);
+}
+.kpi-label{
+  font-size:10px;
+  letter-spacing:.09em;
+  color:#708293;
+}
+.kpi-value{
+  font-size:29px;
+  letter-spacing:-.035em;
+  margin-top:9px;
+  color:#102b40;
+}
+.kpi-foot{
+  margin-top:5px;
+  line-height:1.35;
+  color:#80909d;
+}
+.grid,.grid2{
+  gap:22px;
+  margin-bottom:26px;
+}
+.panel{
+  border:0;
+  border-radius:var(--radius-lg);
+  background:rgba(255,255,255,.74);
+  box-shadow:none;
+  overflow:hidden;
+  border:1px solid rgba(100,135,160,.10);
+  backdrop-filter:blur(12px);
+  transition:box-shadow .18s ease,background .18s ease;
+}
+.panel:hover{
+  background:rgba(255,255,255,.88);
+  box-shadow:0 14px 36px rgba(8,55,89,.055);
+}
+.panel-head{
+  border-bottom:0;
+  padding:20px 22px 10px;
+  align-items:flex-start;
+}
+.panel-title{
+  font-size:16px;
+  letter-spacing:-.015em;
+  color:#173247;
+}
+.panel-title:after{
+  content:"";
+  display:block;
+  width:32px;
+  height:3px;
+  margin-top:9px;
+  border-radius:999px;
+  background:linear-gradient(90deg,#0b6fb8,#6cbce9);
+}
+.panel-meta{
+  margin-top:5px;
+  color:#7c8e9d;
+}
+.panel-body{
+  padding:14px 22px 22px;
+}
+.attention,.staffing-grid{
+  gap:10px;
+}
+.attention-card,.stat,.compare-card,.hour-card,.insight{
+  border:0;
+  border-radius:15px;
+  background:linear-gradient(180deg,#fbfdff,#f7fafc);
+  box-shadow:inset 0 0 0 1px rgba(107,139,160,.10);
+}
+.attention-card,.stat{
+  padding:14px;
+}
+.attention-card:hover,.stat:hover,.compare-card:hover,.hour-card:hover,.insight:hover{
+  background:#fff;
+}
+.attention-label,.stat-name{
+  color:#738696;
+}
+.attention-value,.stat-value{
+  color:#123047;
+  letter-spacing:-.025em;
+}
+.summary-row{
+  padding:11px 0;
+  border-bottom:1px solid rgba(116,144,164,.12);
+}
+.summary-row span{color:#718594}
+.summary-row strong{color:#18364c}
+.table-wrap,.queue-wrap,.heatmap-wrap{
+  border-radius:16px;
+  overflow:auto;
+}
+table{
+  border-collapse:separate;
+  border-spacing:0;
+}
+th{
+  background:#f4f8fb;
+  color:#5f7485;
+  font-size:10px;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+}
+th,td{
+  border-color:rgba(113,143,165,.12)!important;
+}
+tbody tr{
+  transition:background .14s ease;
+}
+tbody tr:hover{
+  background:#f7fbfe;
+}
+.pill{
+  border-radius:999px;
+  border:0;
+  background:#eef5fa;
+  color:#47677e;
+}
+.note,.flag,.warning{
+  border:0;
+  border-radius:14px;
+  box-shadow:inset 0 0 0 1px rgba(117,145,164,.10);
+}
+.barwrap,.trend-track{
+  border-radius:999px;
+  background:#eaf0f4;
+  overflow:hidden;
+}
+.bar,.trend-fill{
+  border-radius:999px;
+}
+.modal-card{
+  border-radius:22px;
+  box-shadow:0 28px 70px rgba(4,37,62,.22);
+}
+@media(max-width:1100px){
+  .nav{border-radius:18px}
+}
+@media(max-width:700px){
+  .page{padding:22px 16px 36px}
+  h1{font-size:27px}
+  .health-strip{border-radius:16px}
+  .filters{border-radius:16px}
+  .kpi{border-radius:16px}
+  .panel{border-radius:18px}
+}
+
+
+/* =========================
+   V8.7.1 Call Activity hourly bars
+   ========================= */
+.callmix-legend{
+  display:flex;
+  align-items:center;
+  gap:14px;
+  flex-wrap:wrap;
+  font-size:11px;
+  color:#687d8e;
+}
+.callmix-legend-item{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  white-space:nowrap;
+}
+.callmix-swatch{
+  width:22px;
+  height:7px;
+  border-radius:999px;
+  display:inline-block;
+}
+.callmix-swatch.inbound{background:#31945f}
+.callmix-swatch.outbound{background:#b9dfbd}
+
+#bars.bars{
+  display:block;
+  padding:2px 0 0;
+}
+#bars .day-group{
+  margin:0 0 22px;
+}
+#bars .day-group:last-child{
+  margin-bottom:0;
+}
+#bars .day-title{
+  margin:0 0 8px 2px;
+  font-size:13px;
+  font-weight:850;
+  color:#173247;
+  letter-spacing:-.01em;
+}
+#bars .day-bars{
+  display:flex;
+  align-items:stretch;
+  gap:7px;
+  height:150px;
+  padding:8px;
+  overflow-x:auto;
+  overflow-y:hidden;
+  border:1px solid rgba(100,135,160,.14);
+  border-radius:16px;
+  background:rgba(248,251,253,.76);
+  scrollbar-width:thin;
+}
+#bars .activity-hour{
+  flex:1 0 72px;
+  min-width:72px;
+  max-width:104px;
+  height:132px;
+  display:grid;
+  grid-template-rows:auto 1fr auto;
+  align-items:center;
+  padding:8px 7px 7px;
+  border:1px solid rgba(111,143,165,.08);
+  border-radius:14px;
+  background:linear-gradient(180deg,rgba(255,255,255,.92),rgba(247,250,252,.94));
+  box-shadow:0 5px 14px rgba(10,55,86,.035);
+  transition:transform .16s ease,box-shadow .16s ease,background .16s ease;
+}
+#bars .activity-hour:hover{
+  transform:translateY(-2px);
+  background:#fff;
+  box-shadow:0 9px 20px rgba(10,55,86,.08);
+}
+#bars .activity-counts{
+  min-height:17px;
+  text-align:center;
+  font-size:10px;
+  font-weight:800;
+  color:#476176;
+  letter-spacing:.01em;
+  white-space:nowrap;
+}
+#bars .activity-bars{
+  height:72px;
+  display:flex;
+  align-items:flex-end;
+  justify-content:center;
+  gap:7px;
+  padding:6px 2px 2px;
+}
+#bars .activity-bar{
+  width:18px;
+  max-width:38%;
+  min-height:2px;
+  border-radius:5px 5px 2px 2px;
+  transition:height .22s ease,filter .16s ease;
+}
+#bars .activity-bar.inbound{
+  background:linear-gradient(180deg,#43a86f,#2e8f5a);
+  box-shadow:inset 0 0 0 1px rgba(26,112,65,.08);
+}
+#bars .activity-bar.outbound{
+  background:linear-gradient(180deg,#c9e8c8,#abd7b2);
+  box-shadow:inset 0 0 0 1px rgba(77,139,88,.06);
+}
+#bars .activity-hour:hover .activity-bar{
+  filter:saturate(1.08);
+}
+#bars .activity-hour-label{
+  padding-top:5px;
+  text-align:center;
+  font-size:10px;
+  font-weight:750;
+  color:#667c8e;
+  white-space:nowrap;
+}
+@media(max-width:700px){
+  #bars .day-bars{height:144px}
+  #bars .activity-hour{flex-basis:68px;min-width:68px;height:126px}
+  #bars .activity-bar{width:16px}
+}
+
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div class="brand"><div><div class="brand-title">BHS Corrugated</div><div class="brand-sub">Contact Center Analytics</div></div></div>
+  <nav class="nav"><a href="/executive-overview">Executive</a><a href="/staffing">Staffing</a><a href="/call-demand">Call Demand</a><a href="/service-sla">Service / SLA</a><a href="/missed-callbacks">Missed & Callbacks</a><a class="active" href="/inbound-outbound">Call Activity</a><a href="/auth/logout">Sign out</a></nav><div class="bhs-logo-wrap"><img class="bhs-header-logo" src="/static/bhs_logo.png" alt="BHS Corrugated logo"></div>
+</div>
+<main class="page">
+  <section class="health-strip">
+    <div class="health-left">
+      <span id="healthDot" class="health-dot health-no_data"></span>
+      <span id="healthLabel" class="health-label">Data status: Checking…</span>
+      <span id="healthFreshness" class="health-meta"></span>
+    </div>
+    <span id="healthUpdated" class="health-meta"></span>
+  </section>
+
+  <div class="heading-row">
+    <div><h1>Call Activity</h1><div class="subtitle">See how much work is inbound vs outbound, when it happens, and which agents are handling outbound calls.</div><div class="policy">Task-level call counts · Outbound agent ownership from taskDetails.lastAgent</div></div>
+    <button class="btn" style="background:#fff;color:var(--brand-dark);border:1px solid var(--line)" onclick="openDefs()">Metric Definitions</button>
+  </div>
+
+  <section class="filters">
+    <div class="field"><label>From</label><input id="fromDate" type="date"></div>
+    <div class="field"><label>To</label><input id="toDate" type="date"></div>
+    <div class="field"><label for="queueFilter">Queue</label><select id="queueFilter" onchange="loadData()"><option value="">All queues</option></select></div>
+    <button class="btn" onclick="reloadWithQueues()">Apply</button>
+  </section>
+
+  <section class="kpis">
+    <div class="kpi"><div class="kpi-label">Inbound Calls</div><div id="inbound" class="kpi-value">—</div><div class="kpi-foot">all inbound interactions</div></div>
+    <div class="kpi"><div class="kpi-label">Outbound Calls</div><div id="outbound" class="kpi-value">—</div><div class="kpi-foot">agent outdial interactions</div></div>
+    <div class="kpi"><div class="kpi-label">Outbound Share</div><div id="outShare" class="kpi-value">—</div><div class="kpi-foot">outbound ÷ inbound + outbound</div></div>
+    <div class="kpi"><div class="kpi-label">Inbound : Outbound</div><div id="ratio" class="kpi-value">—</div><div class="kpi-foot">call volume ratio</div></div>
+    <div class="kpi"><div class="kpi-label">Outbound Connected</div><div id="outConnected" class="kpi-value">—</div><div class="kpi-foot">outbound calls that connected</div></div>
+    <div class="kpi"><div class="kpi-label">Outbound Talk Time</div><div id="talk" class="kpi-value">—</div><div class="kpi-foot">connected outbound time</div></div>
+  </section>
+
+  <section class="panel" style="margin-bottom:18px">
+    <div class="panel-head">
+      <div>
+        <div class="panel-title">Hourly Call Mix</div>
+        <div class="panel-meta">Two-bar comparison by hour · counts shown as Inbound / Outbound</div>
+      </div>
+      <div class="callmix-legend" aria-label="Hourly call mix legend">
+        <span class="callmix-legend-item"><span class="callmix-swatch inbound"></span>Inbound</span>
+        <span class="callmix-legend-item"><span class="callmix-swatch outbound"></span>Outbound</span>
+      </div>
+    </div>
+    <div class="panel-body"><div id="bars" class="bars"></div></div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><div><div class="panel-title">Outbound Activity by Agent</div><div class="panel-meta">Task-level last agent ownership</div></div></div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Agent</th><th>Outbound Calls</th><th>Connected</th><th>Connect Rate</th><th>Talk Time</th><th>Avg Talk</th></tr></thead>
+      <tbody id="agentRows"></tbody>
+    </table></div>
+  </section>
+
+  <section class="panel" style="margin-top:18px">
+    <div class="panel-head"><div><div class="panel-title">Hourly Call Activity Heatmap</div><div class="panel-meta">Date × hour · darker cells = more total call activity</div></div></div>
+    <div class="heatmap-wrap"><div id="heatmap" class="heatmap"></div></div>
+    <div class="heat-legend">
+      <span class="legend-label">Activity:</span>
+      <span class="legend-box heat-empty"></span><span>None</span>
+      <span class="legend-box heat-1"></span><span>Low</span>
+      <span class="legend-box heat-3"></span><span>Medium</span>
+      <span class="legend-box heat-5"></span><span>High</span>
+      <span style="margin-left:8px">Cell text = Inbound / Outbound</span>
+    </div>
+  </section>
+</main>
+
+<div id="defs" class="modal" onclick="if(event.target===this)closeDefs()"><div class="modal-card">
+  <div class="modal-head"><div><h2 style="margin:0">Metric Definitions</h2><div class="subtitle">Plain-English reporting definitions</div></div><button class="close" onclick="closeDefs()">×</button></div>
+  <div class="def"><strong>Inbound Calls</strong><p>Interactions whose Webex direction is inbound.</p></div>
+  <div class="def"><strong>Outbound Calls</strong><p>Interactions whose Webex direction is outdial.</p></div>
+  <div class="def"><strong>Outbound Share</strong><p>The percentage of inbound + outbound calls that were outbound.</p></div>
+  
+  
+  
+  <div class="def"><strong>Outbound Connected</strong><p>The number of outbound interactions that successfully connected.</p></div><div class="def"><strong>Outbound Talk Time</strong><p>Total connected duration on outbound interactions.</p></div>
+  
+</div></div>
+
+<script>
+async function reloadWithQueues(){await loadQueueOptions();await loadData();}
+
+async function loadQueueOptions(){
+  const sel=$('queueFilter');
+  if(!sel)return;
+  const previous=sel.value;
+  const p=new URLSearchParams();
+  let f=null,t=null;
+  if(typeof localStart==='function'){f=localStart($('fromDate').value);t=localAfter($('toDate').value);}
+  else if(typeof localDayStartMs==='function'){f=localDayStartMs($('fromDate').value);t=localDayAfterMs($('toDate').value);}
+  if(f!==null)p.set('from_ms',f);
+  if(t!==null)p.set('to_ms',t);
+  try{
+    const r=await fetch('/api/dashboard/queues?'+p.toString());
+    if(!r.ok)throw new Error(`HTTP ${r.status}`);
+    const d=await r.json();
+    sel.innerHTML='<option value="">All queues</option>'+(d.queues||[]).map(q=>`<option value="${String(q).replaceAll('"','&quot;')}">${q}</option>`).join('');
+    if([...sel.options].some(o=>o.value===previous))sel.value=previous;
+  }catch(e){console.warn('Queue list failed',e)}
+}
+
+const $=id=>document.getElementById(id);
+
+
+async function refreshFreshData(){
+  const dot=document.getElementById('healthDot');
+  const label=document.getElementById('healthLabel');
+  const freshness=document.getElementById('healthFreshness');
+  const updated=document.getElementById('healthUpdated');
+
+  if(dot) dot.className='health-dot health-delayed';
+  if(label) label.textContent='Collector: Refreshing…';
+  if(freshness) freshness.textContent='Pulling recent WxCC data';
+  if(updated) updated.textContent='';
+
+  try{
+    const res=await fetch('/api/collector/refresh?lookback_minutes=120&min_interval_minutes=5',{
+      method:'POST'
+    });
+    if(!res.ok){
+      throw new Error(`${res.status} ${await res.text()}`);
+    }
+    return await res.json();
+  }catch(err){
+    console.warn('Fresh data pull failed:',err);
+    return {success:false,error:String(err)};
+  }
+}
+
+async function loadHealthStatus(){
+  const dot=document.getElementById('healthDot');
+  const label=document.getElementById('healthLabel');
+  const freshness=document.getElementById('healthFreshness');
+  const updated=document.getElementById('healthUpdated');
+  if(!dot||!label)return;
+  try{
+    const res=await fetch('/api/dashboard/health-status');
+    if(!res.ok)throw new Error(`${res.status} ${res.statusText}`);
+    const h=await res.json();
+    const c=h.collector||{},d=h.data||{};
+    dot.className=`health-dot health-${c.status||h.status||'no_data'}`;
+    const names={healthy:'Healthy',delayed:'Delayed',stale:'Stale',error:'Error',no_runs:'No runs',no_data:'No data'};
+    label.textContent=`Collector: ${names[c.status||h.status]||c.status||h.status}`;
+    freshness.textContent=c.age_minutes==null?'No successful collector run':`Last successful run: ${c.age_minutes} min ago`;
+    if(d.newest_data_ms||h.newest_data_ms){
+      updated.textContent=`Data through: ${new Date(Number(d.newest_data_ms||h.newest_data_ms)).toLocaleString()}`;
+    }else{
+      updated.textContent='Data through: —';
+    }
+  }catch(e){
+    dot.className='health-dot health-stale';
+    label.textContent='Data status: Unavailable';
+    freshness.textContent='Could not load health status';
+    updated.textContent='';
+  }
+}
+
+
+
+async function refreshFreshData(){
+  const dot=document.getElementById('healthDot');
+  const label=document.getElementById('healthLabel');
+  const freshness=document.getElementById('healthFreshness');
+  const updated=document.getElementById('healthUpdated');
+
+  if(dot) dot.className='health-dot health-delayed';
+  if(label) label.textContent='Collector: Refreshing…';
+  if(freshness) freshness.textContent='Pulling recent WxCC data';
+  if(updated) updated.textContent='';
+
+  try{
+    const res=await fetch('/api/collector/refresh?lookback_minutes=120&min_interval_minutes=5',{
+      method:'POST'
+    });
+    if(!res.ok){
+      throw new Error(`${res.status} ${await res.text()}`);
+    }
+    return await res.json();
+  }catch(err){
+    console.warn('Fresh data pull failed:',err);
+    return {success:false,error:String(err)};
+  }
+}
+
+async function loadHealthStatus(){
+  const dot=document.getElementById('healthDot');
+  const label=document.getElementById('healthLabel');
+  const freshness=document.getElementById('healthFreshness');
+  const updated=document.getElementById('healthUpdated');
+  if(!dot||!label)return;
+  try{
+    const res=await fetch('/api/dashboard/health-status');
+    if(!res.ok)throw new Error(`${res.status} ${res.statusText}`);
+    const h=await res.json();
+    const c=h.collector||{},d=h.data||{};
+    dot.className=`health-dot health-${c.status||h.status||'no_data'}`;
+    const names={healthy:'Healthy',delayed:'Delayed',stale:'Stale',error:'Error',no_runs:'No runs',no_data:'No data'};
+    label.textContent=`Collector: ${names[c.status||h.status]||c.status||h.status}`;
+    freshness.textContent=c.age_minutes==null?'No successful collector run':`Last successful run: ${c.age_minutes} min ago`;
+    if(d.newest_data_ms||h.newest_data_ms){
+      updated.textContent=`Data through: ${new Date(Number(d.newest_data_ms||h.newest_data_ms)).toLocaleString()}`;
+    }else{
+      updated.textContent='Data through: —';
+    }
+  }catch(e){
+    dot.className='health-dot health-stale';
+    label.textContent='Data status: Unavailable';
+    freshness.textContent='Could not load health status';
+    updated.textContent='';
+  }
+}
+
+function openDefs(){$('defs').classList.add('open')}function closeDefs(){$('defs').classList.remove('open')}
+function pct(v){return `${Number(v||0).toFixed(1)}%`}
+function duration(sec){
+  sec=Number(sec||0);
+  if(!sec)return '—';
+  if(sec<60)return `${Math.round(sec)}s`;
+  if(sec<3600)return `${Math.floor(sec/60)}m ${Math.round(sec%60)}s`;
+  return `${Math.floor(sec/3600)}h ${Math.round((sec%3600)/60)}m`;
+}
+function localStart(v){if(!v)return null;return new Date(v+'T00:00:00').getTime()}
+function localAfter(v){if(!v)return null;const d=new Date(v+'T00:00:00');d.setDate(d.getDate()+1);return d.getTime()}
+function setDefaults(){
+  const now=new Date(),from=new Date(now);from.setDate(now.getDate()-6);
+  $('toDate').value=now.toISOString().slice(0,10);$('fromDate').value=from.toISOString().slice(0,10);
+}
+function apiUrl(){
+  const p=new URLSearchParams(),f=localStart($('fromDate').value),t=localAfter($('toDate').value);
+  if(f!==null)p.set('from_ms',f);if(t!==null)p.set('to_ms',t);
+  p.set('timezone',Intl.DateTimeFormat().resolvedOptions().timeZone||'America/Detroit');
+    const qf=$('queueFilter')?.value;if(qf)p.set('queue_name',qf);
+  return '/api/dashboard/inbound-outbound?'+p.toString();
+}
+function renderBars(rows){
+  const el=$('bars');el.innerHTML='';
+  if(!rows.length){el.innerHTML='<div class="empty">No data for this period.</div>';return}
+
+  const byDate={};
+  rows.forEach(r=>(byDate[r.date]??=[]).push(r));
+
+  // Use one scale across the selected period so an hour can be compared
+  // visually with any other hour on the page.
+  const maxCalls=Math.max(
+    ...rows.flatMap(r=>[
+      Number(r.inbound_calls||0),
+      Number(r.outbound_calls||0)
+    ]),
+    1
+  );
+  const maxBarHeight=62;
+
+  Object.keys(byDate).sort().forEach(date=>{
+    const group=document.createElement('div');
+    group.className='day-group';
+
+    const label=new Date(date+'T00:00:00').toLocaleDateString(
+      undefined,
+      {weekday:'short',month:'short',day:'numeric',year:'numeric'}
+    );
+
+    group.innerHTML=`<div class="day-title">${label}</div><div class="day-bars"></div>`;
+    const bars=group.querySelector('.day-bars');
+
+    byDate[date].sort((a,b)=>a.hour-b.hour).forEach(r=>{
+      const inbound=Number(r.inbound_calls||0);
+      const outbound=Number(r.outbound_calls||0);
+      const inboundHeight=inbound===0?0:Math.max(4,(inbound/maxCalls)*maxBarHeight);
+      const outboundHeight=outbound===0?0:Math.max(4,(outbound/maxCalls)*maxBarHeight);
+
+      const card=document.createElement('div');
+      card.className='activity-hour';
+      card.title=`${label} ${r.hour_label}: ${inbound} inbound, ${outbound} outbound`;
+
+      card.innerHTML=`
+        <div class="activity-counts" aria-label="${inbound} inbound, ${outbound} outbound">${inbound}/${outbound}</div>
+        <div class="activity-bars" aria-hidden="true">
+          <div class="activity-bar inbound" style="height:${inboundHeight}px"></div>
+          <div class="activity-bar outbound" style="height:${outboundHeight}px"></div>
+        </div>
+        <div class="activity-hour-label">${r.hour_label}</div>
+      `;
+      bars.appendChild(card);
+    });
+
+    el.appendChild(group);
+  });
+}
+function renderAgents(rows){
+  $('agentRows').innerHTML=rows.map(r=>`<tr>
+    <td>${r.agent_name}</td><td>${r.outbound_calls}</td><td>${r.connected_outbound_calls}</td>
+    <td><span class="pill ${r.outbound_connect_rate>=80?'good':'bad'}">${pct(r.outbound_connect_rate)}</span></td>
+    <td>${duration(r.outbound_talk_seconds)}</td><td>${duration(r.avg_outbound_talk_seconds)}</td>
+  </tr>`).join('')||'<tr><td colspan="6" class="empty">No outbound agent activity.</td></tr>';
+}
+function renderHeatmap(rows){
+  const el=$('heatmap');el.innerHTML='';
+  if(!rows.length){el.innerHTML='<div class="empty">No hourly activity.</div>';return}
+
+  const dates=[...new Set(rows.map(r=>r.date))].sort();
+  const hours=[...new Set(rows.map(r=>r.hour))].sort((a,b)=>a-b);
+  const lookup=new Map(rows.map(r=>[`${r.date}|${r.hour}`,r]));
+  const maxTotal=Math.max(...rows.map(r=>Number(r.inbound_calls||0)+Number(r.outbound_calls||0)),1);
+
+  el.style.gridTemplateColumns=`minmax(120px,auto) repeat(${hours.length},minmax(48px,1fr))`;
+
+  const corner=document.createElement('div');
+  corner.className='heat-head';
+  corner.textContent='Date';
+  el.appendChild(corner);
+
+  hours.forEach(h=>{
+    const sample=rows.find(r=>r.hour===h);
+    const head=document.createElement('div');
+    head.className='heat-head';
+    head.textContent=sample?sample.hour_label:`${h}:00`;
+    el.appendChild(head);
+  });
+
+  dates.forEach(date=>{
+    const d=document.createElement('div');
+    d.className='heat-date';
+    d.textContent=new Date(date+'T00:00:00').toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'});
+    el.appendChild(d);
+
+    hours.forEach(h=>{
+      const r=lookup.get(`${date}|${h}`);
+      const cell=document.createElement('div');
+
+      if(!r){
+        cell.className='heat-cell heat-empty';
+        cell.innerHTML='<strong>—</strong><span>No calls</span>';
+      }else{
+        const inbound=Number(r.inbound_calls||0);
+        const outbound=Number(r.outbound_calls||0);
+        const total=inbound+outbound;
+        const level=total===0?0:Math.max(1,Math.min(5,Math.ceil(total/maxTotal*5)));
+        cell.className=`heat-cell ${level===0?'heat-empty':'heat-'+level}`;
+        cell.innerHTML=`<strong>${inbound} / ${outbound}</strong><span>${total} total</span>`;
+        cell.title=`${date} ${r.hour_label}: ${inbound} inbound, ${outbound} outbound, ${total} total`;
+      }
+
+      el.appendChild(cell);
+    });
+  });
+}
+
+async function loadData(){
+  try{
+    const res=await fetch(apiUrl());if(!res.ok)throw new Error(`${res.status} ${res.statusText}`);
+    const d=await res.json(),o=d.overview;
+    $('inbound').textContent=o.inbound_calls;
+    $('outbound').textContent=o.outbound_calls;
+    $('outShare').textContent=pct(o.outbound_share);
+    $('ratio').textContent=o.inbound_to_outbound_ratio==null?'—':`${o.inbound_to_outbound_ratio}:1`;
+    $('outConnected').textContent=o.outbound_connected;
+    $('talk').textContent=duration(o.outbound_talk_seconds);
+    renderBars(d.hourly||[]);renderAgents(d.agents||[]);renderHeatmap(d.hourly||[]);
+  }catch(e){$('agentRows').innerHTML=`<tr><td colspan="6" class="error">Could not load call activity data: ${e.message}</td></tr>`;$('heatmap').innerHTML=`<div class="error">Could not load heatmap data.</div>`}
+}
+setDefaults();
+(async()=>{
+  await refreshFreshData();
+  await loadQueueOptions();
+    await loadData();
+  await loadHealthStatus();
+})();
+</script>
+</body></html>
+"""
+
+
+@app.get("/executive-overview", response_class=HTMLResponse)
+def executive_overview_page():
+    return r"""
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BHS Corrugated | Executive Overview</title>
+<style>
+:root{--bg:#f4f7fa;--panel:#fff;--ink:#12263a;--muted:#667788;--line:#d8e2ec;--brand:#0a5fa8;--brand-dark:#003f73;--soft:#e8f2fb;--bad:#b42318;--badbg:#fff0ee;--warn:#9a6700;--warnbg:#fff7dd;--shadow:0 7px 24px rgba(0,63,115,.08)}
+*{box-sizing:border-box}body{margin:0;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--ink)}
+button,input{font:inherit}.topbar{height:66px;display:flex;align-items:center;justify-content:space-between;padding:0 28px;background:#063b66;color:#fff;position:sticky;top:0;z-index:10}
+.brand{display:flex;gap:12px;align-items:center}.mark{width:34px;height:34px;display:grid;place-items:center;border-radius:10px;background:#0a6fb9;font-weight:900}.brand-title{font-weight:800}.brand-sub{font-size:12px;color:#c9dbea}
+.nav{display:flex;gap:15px;flex-wrap:wrap}.nav a{color:#d3e4f2;text-decoration:none;font-size:13px}.nav a.active{color:#fff;font-weight:800}
+.page{max-width:1500px;margin:auto;padding:28px}.heading-row{display:flex;justify-content:space-between;align-items:flex-end;gap:18px;flex-wrap:wrap;margin-bottom:20px}
+h1{margin:0;font-size:30px}.subtitle{margin-top:5px;color:var(--muted);font-size:14px}.policy{margin-top:6px;color:var(--muted);font-size:12px}
+.filters{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;display:grid;grid-template-columns:minmax(160px,1fr) minmax(160px,1fr) auto;gap:12px;align-items:end;box-shadow:var(--shadow);margin-bottom:18px}
+.field label{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.07em;font-weight:800;color:var(--muted);margin-bottom:6px}input{width:100%;border:1px solid var(--line);border-radius:10px;padding:10px 11px;background:#fff}.btn{border:0;border-radius:10px;padding:11px 16px;background:var(--brand);color:#fff;font-weight:800;cursor:pointer}.btn:hover{filter:brightness(.96)}.btn:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid rgba(10,95,168,.22);outline-offset:2px}
+.kpis{display:grid;grid-template-columns:repeat(8,minmax(120px,1fr));gap:12px;margin-bottom:18px}.kpi{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;box-shadow:var(--shadow)}.kpi-label{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:800}.kpi-value{font-size:28px;font-weight:850;margin-top:8px}.kpi-foot{font-size:11px;color:var(--muted);margin-top:3px}
+.grid{display:grid;grid-template-columns:1.15fr .85fr;gap:18px;margin-bottom:18px}.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow);overflow:hidden}.panel-head{padding:16px 18px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:12px;align-items:center}.panel-title{font-weight:850}.panel-meta{font-size:12px;color:var(--muted)}.panel-body{padding:16px 18px}
+.attention{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.attention-card{border:1px solid var(--line);border-radius:14px;padding:14px}.attention-label{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);font-weight:800}.attention-title{font-size:17px;font-weight:850;margin-top:7px}.attention-value{font-size:24px;font-weight:850;margin-top:6px}.attention-context{font-size:11px;color:var(--muted);margin-top:6px;line-height:1.45}
+.staffing-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.stat{border:1px solid var(--line);border-radius:12px;padding:12px}.stat-name{font-size:11px;color:var(--muted);font-weight:800}.stat-value{font-size:21px;font-weight:850;margin-top:5px}
+.split{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}.summary-row{display:flex;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)}.summary-row:last-child{border-bottom:0}.summary-row span{color:var(--muted);font-size:12px}.summary-row strong{font-size:13px}
+.flag{padding:12px 14px;border-radius:12px;background:var(--warnbg);font-size:12px;color:#6f4b00;line-height:1.5;margin-top:12px}
+.modal{display:none;position:fixed;inset:0;background:rgba(15,30,22,.45);z-index:20;align-items:center;justify-content:center;padding:20px}.modal.open{display:flex}.modal-card{width:min(760px,100%);max-height:85vh;overflow:auto;background:#fff;border-radius:18px;padding:22px}.modal-head{display:flex;justify-content:space-between;gap:12px}.close{border:0;background:none;font-size:24px;cursor:pointer}.def{padding:12px 0;border-bottom:1px solid var(--line)}.def strong{display:block;margin-bottom:4px}.def p{margin:0;color:var(--muted);font-size:13px;line-height:1.5}.error{padding:20px;color:var(--bad)}
+@media(max-width:1100px){.kpis{grid-template-columns:repeat(4,1fr)}.grid{grid-template-columns:1fr}}@media(max-width:700px){.kpis{grid-template-columns:repeat(2,1fr)}.filters{grid-template-columns:1fr}.attention{grid-template-columns:1fr}.staffing-grid{grid-template-columns:repeat(2,1fr)}.page{padding:18px}.nav{display:none}}
+.bhs-logo-wrap{margin-left:12px;background:#fff;border-radius:8px;padding:4px 8px;display:flex;align-items:center;justify-content:center;flex:0 0 auto;min-height:46px}.bhs-header-logo{display:block;height:40px;width:auto;max-width:118px;object-fit:contain}@media(max-width:700px){.bhs-logo-wrap{margin-left:auto;padding:3px 6px;min-height:40px}.bhs-header-logo{height:34px;max-width:94px}}.health-strip{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin-bottom:14px;box-shadow:var(--shadow)}.health-left{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.health-dot{width:9px;height:9px;border-radius:50%;display:inline-block}.health-healthy{background:#2e8b57}.health-delayed{background:#d59b00}.health-stale{background:#c0392b}.health-error{background:#c0392b}.health-no_runs{background:#8a98a6}.health-no_data{background:#8a98a6}.health-label{font-size:12px;font-weight:850}.health-meta{font-size:11px;color:var(--muted)}
+/* =========================
+   V8.7.0 Modern UI Refresh
+   Presentation-only overrides
+   ========================= */
+:root{
+  --surface:#ffffff;
+  --surface-soft:rgba(255,255,255,.72);
+  --surface-tint:#f8fbfd;
+  --navy:#07395f;
+  --navy-2:#0b4e7f;
+  --blue:#0b6fb8;
+  --blue-soft:#eaf5fc;
+  --steel:#e7edf2;
+  --text:#14283a;
+  --muted-2:#718294;
+  --radius-lg:22px;
+  --radius-md:16px;
+  --shadow-soft:0 14px 34px rgba(11,55,88,.07);
+  --shadow-hover:0 18px 42px rgba(11,55,88,.12);
+}
+body{
+  background:
+    radial-gradient(circle at 5% 0%, rgba(11,111,184,.08), transparent 28rem),
+    linear-gradient(180deg,#f8fbfd 0%,#f3f7fa 100%);
+  color:var(--text);
+}
+.topbar{
+  height:72px;
+  padding:0 30px;
+  background:linear-gradient(100deg,#062f51 0%,#074b79 100%);
+  box-shadow:0 8px 28px rgba(4,44,75,.16);
+  border-bottom:1px solid rgba(255,255,255,.08);
+  backdrop-filter:blur(14px);
+}
+.brand-title{font-size:15px;letter-spacing:.01em}
+.brand-sub{color:#c8dbea;letter-spacing:.02em}
+.nav{
+  gap:6px;
+  padding:5px;
+  border:1px solid rgba(255,255,255,.10);
+  background:rgba(255,255,255,.06);
+  border-radius:999px;
+}
+.nav a{
+  padding:8px 12px;
+  border-radius:999px;
+  color:#d9e9f5;
+  transition:background .18s ease,color .18s ease,transform .18s ease;
+}
+.nav a:hover{
+  background:rgba(255,255,255,.10);
+  color:#fff;
+  transform:translateY(-1px);
+}
+.nav a.active{
+  color:#07395f;
+  background:#fff;
+  box-shadow:0 5px 14px rgba(0,0,0,.10);
+  font-weight:850;
+}
+.bhs-logo-wrap{
+  border-radius:12px;
+  border:1px solid rgba(255,255,255,.22);
+  box-shadow:0 5px 14px rgba(0,0,0,.10);
+}
+.page{
+  max-width:1540px;
+  padding:34px 34px 46px;
+}
+.heading-row{
+  align-items:center;
+  padding:4px 2px 6px;
+  margin-bottom:18px;
+}
+h1{
+  font-size:32px;
+  line-height:1.15;
+  letter-spacing:-.035em;
+  color:#10283b;
+}
+.subtitle{
+  font-size:14px;
+  margin-top:8px;
+  color:#65798a;
+}
+.policy{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  margin-top:10px;
+  padding:6px 10px;
+  border-radius:999px;
+  background:rgba(11,111,184,.07);
+  color:#527086;
+}
+.health-strip{
+  border:0;
+  border-radius:999px;
+  background:rgba(255,255,255,.82);
+  box-shadow:none;
+  padding:10px 16px;
+  border:1px solid rgba(109,139,162,.16);
+  backdrop-filter:blur(12px);
+}
+.health-dot{
+  box-shadow:0 0 0 4px rgba(46,139,87,.08);
+}
+.filters{
+  border:0;
+  border-radius:18px;
+  padding:12px;
+  gap:10px;
+  background:rgba(255,255,255,.78);
+  box-shadow:0 8px 24px rgba(9,57,91,.06);
+  backdrop-filter:blur(14px);
+  border:1px solid rgba(99,134,160,.14);
+}
+.field label{
+  margin:0 0 5px 4px;
+  font-size:10px;
+  letter-spacing:.10em;
+}
+input,select{
+  min-height:42px;
+  border:1px solid #dce6ed;
+  border-radius:12px;
+  background:#fbfdff;
+  box-shadow:inset 0 1px 2px rgba(16,40,59,.03);
+}
+input:focus,select:focus{
+  border-color:#8fc4e8;
+  box-shadow:0 0 0 4px rgba(11,111,184,.08);
+}
+.btn,.apply,.info-btn{
+  border-radius:12px;
+  box-shadow:0 7px 16px rgba(11,111,184,.14);
+  transition:transform .18s ease,box-shadow .18s ease,filter .18s ease;
+}
+.btn:hover,.apply:hover,.info-btn:hover{
+  transform:translateY(-1px);
+  box-shadow:0 10px 22px rgba(11,111,184,.18);
+}
+.kpis{
+  gap:10px;
+  margin:22px 0 28px;
+}
+.kpi{
+  position:relative;
+  overflow:hidden;
+  border:0;
+  border-radius:18px;
+  padding:17px 16px 16px;
+  background:rgba(255,255,255,.82);
+  box-shadow:none;
+  border:1px solid rgba(104,137,160,.12);
+  transition:transform .18s ease,box-shadow .18s ease,background .18s ease;
+}
+.kpi:before{
+  content:"";
+  position:absolute;
+  left:0;
+  top:0;
+  bottom:0;
+  width:3px;
+  background:linear-gradient(180deg,#0b6fb8,#65b7e8);
+  opacity:.85;
+}
+.kpi:hover{
+  transform:translateY(-2px);
+  background:#fff;
+  box-shadow:var(--shadow-soft);
+}
+.kpi-label{
+  font-size:10px;
+  letter-spacing:.09em;
+  color:#708293;
+}
+.kpi-value{
+  font-size:29px;
+  letter-spacing:-.035em;
+  margin-top:9px;
+  color:#102b40;
+}
+.kpi-foot{
+  margin-top:5px;
+  line-height:1.35;
+  color:#80909d;
+}
+.grid,.grid2{
+  gap:22px;
+  margin-bottom:26px;
+}
+.panel{
+  border:0;
+  border-radius:var(--radius-lg);
+  background:rgba(255,255,255,.74);
+  box-shadow:none;
+  overflow:hidden;
+  border:1px solid rgba(100,135,160,.10);
+  backdrop-filter:blur(12px);
+  transition:box-shadow .18s ease,background .18s ease;
+}
+.panel:hover{
+  background:rgba(255,255,255,.88);
+  box-shadow:0 14px 36px rgba(8,55,89,.055);
+}
+.panel-head{
+  border-bottom:0;
+  padding:20px 22px 10px;
+  align-items:flex-start;
+}
+.panel-title{
+  font-size:16px;
+  letter-spacing:-.015em;
+  color:#173247;
+}
+.panel-title:after{
+  content:"";
+  display:block;
+  width:32px;
+  height:3px;
+  margin-top:9px;
+  border-radius:999px;
+  background:linear-gradient(90deg,#0b6fb8,#6cbce9);
+}
+.panel-meta{
+  margin-top:5px;
+  color:#7c8e9d;
+}
+.panel-body{
+  padding:14px 22px 22px;
+}
+.attention,.staffing-grid{
+  gap:10px;
+}
+.attention-card,.stat,.compare-card,.hour-card,.insight{
+  border:0;
+  border-radius:15px;
+  background:linear-gradient(180deg,#fbfdff,#f7fafc);
+  box-shadow:inset 0 0 0 1px rgba(107,139,160,.10);
+}
+.attention-card,.stat{
+  padding:14px;
+}
+.attention-card:hover,.stat:hover,.compare-card:hover,.hour-card:hover,.insight:hover{
+  background:#fff;
+}
+.attention-label,.stat-name{
+  color:#738696;
+}
+.attention-value,.stat-value{
+  color:#123047;
+  letter-spacing:-.025em;
+}
+.summary-row{
+  padding:11px 0;
+  border-bottom:1px solid rgba(116,144,164,.12);
+}
+.summary-row span{color:#718594}
+.summary-row strong{color:#18364c}
+.table-wrap,.queue-wrap,.heatmap-wrap{
+  border-radius:16px;
+  overflow:auto;
+}
+table{
+  border-collapse:separate;
+  border-spacing:0;
+}
+th{
+  background:#f4f8fb;
+  color:#5f7485;
+  font-size:10px;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+}
+th,td{
+  border-color:rgba(113,143,165,.12)!important;
+}
+tbody tr{
+  transition:background .14s ease;
+}
+tbody tr:hover{
+  background:#f7fbfe;
+}
+.pill{
+  border-radius:999px;
+  border:0;
+  background:#eef5fa;
+  color:#47677e;
+}
+.note,.flag,.warning{
+  border:0;
+  border-radius:14px;
+  box-shadow:inset 0 0 0 1px rgba(117,145,164,.10);
+}
+.barwrap,.trend-track{
+  border-radius:999px;
+  background:#eaf0f4;
+  overflow:hidden;
+}
+.bar,.trend-fill{
+  border-radius:999px;
+}
+.modal-card{
+  border-radius:22px;
+  box-shadow:0 28px 70px rgba(4,37,62,.22);
+}
+@media(max-width:1100px){
+  .nav{border-radius:18px}
+}
+@media(max-width:700px){
+  .page{padding:22px 16px 36px}
+  h1{font-size:27px}
+  .health-strip{border-radius:16px}
+  .filters{border-radius:16px}
+  .kpi{border-radius:16px}
+  .panel{border-radius:18px}
+}
+
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div class="brand"><div><div class="brand-title">BHS Corrugated</div><div class="brand-sub">Contact Center Analytics</div></div></div>
+  <nav class="nav"><a class="active" href="/executive-overview">Executive</a><a href="/staffing">Staffing</a><a href="/call-demand">Call Demand</a><a href="/service-sla">Service / SLA</a><a href="/missed-callbacks">Missed & Callbacks</a><a href="/inbound-outbound">Call Activity</a><a href="/auth/logout">Sign out</a></nav><div class="bhs-logo-wrap"><img class="bhs-header-logo" src="/static/bhs_logo.png" alt="BHS Corrugated logo"></div>
+</div>
+<main class="page">
+  <section class="health-strip">
+    <div class="health-left">
+      <span id="healthDot" class="health-dot health-no_data"></span>
+      <span id="healthLabel" class="health-label">Data status: Checking…</span>
+      <span id="healthFreshness" class="health-meta"></span>
+    </div>
+    <span id="healthUpdated" class="health-meta"></span>
+  </section>
+
+  <div class="heading-row">
+    <div><h1>BHS Corrugated Executive Overview</h1><div class="subtitle">Contact center performance at a glance—demand, service, staffing, missed calls, and call activity.</div><div class="policy">BHS Corrugated · Lifecycle Partner in the digital age · 15-second SLA · 5-minute long-wait threshold</div></div>
+    <button class="btn" style="background:#fff;color:var(--brand-dark);border:1px solid var(--line)" onclick="openDefs()">Metric Definitions</button>
+  </div>
+
+  <section class="filters">
+    <div class="field"><label>From</label><input id="fromDate" type="date"></div>
+    <div class="field"><label>To</label><input id="toDate" type="date"></div>
+    <div class="field"><label for="queueFilter">Queue</label><select id="queueFilter" onchange="loadData()"><option value="">All queues</option></select></div>
+    <button class="btn" onclick="reloadWithQueues()">Apply</button>
+  </section>
+
+  <section class="kpis">
+    <div class="kpi"><div class="kpi-label">Inbound Calls</div><div id="inbound" class="kpi-value">—</div><div class="kpi-foot">all inbound interactions</div></div>
+    <div class="kpi"><div class="kpi-label">Queued Calls</div><div id="queued" class="kpi-value">—</div><div class="kpi-foot">inbound calls reaching a queue</div></div>
+    <div class="kpi"><div class="kpi-label">Answered</div><div id="answered" class="kpi-value">—</div><div class="kpi-foot">queued calls connected</div></div>
+    <div class="kpi"><div class="kpi-label">Missed Calls</div><div id="missed" class="kpi-value">—</div><div class="kpi-foot">queued calls not connected</div></div>
+    <div class="kpi"><div class="kpi-label">15-Second SLA</div><div id="sla" class="kpi-value">—</div><div class="kpi-foot">answered within 15s ÷ queued</div></div>
+    <div class="kpi"><div class="kpi-label">Average Queue Wait</div><div id="avgWait" class="kpi-value">—</div><div class="kpi-foot">all queued inbound calls</div></div>
+    <div class="kpi"><div class="kpi-label">Longest Queue Wait</div><div id="maxWait" class="kpi-value">—</div><div class="kpi-foot">maximum observed queue wait</div></div>
+    <div class="kpi"><div class="kpi-label">Outbound Share</div><div id="outShare" class="kpi-value">—</div><div class="kpi-foot">outbound ÷ inbound + outbound</div></div>
+  </section>
+
+  <section class="grid">
+    <div class="panel">
+      <div class="panel-head"><div><div class="panel-title">Needs Attention</div><div class="panel-meta">Relative extremes from the selected period</div></div></div>
+      <div class="panel-body"><div id="attention" class="attention"></div></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><div><div class="panel-title">Staffing Snapshot</div><div class="panel-meta">Aggregated agent session activity</div></div></div>
+      <div class="panel-body"><div id="staffing" class="staffing-grid"></div></div>
+    </div>
+  </section>
+
+  <section class="grid">
+    <div class="panel">
+      <div class="panel-head"><div><div class="panel-title">Call Handling Summary</div><div class="panel-meta">Service and missed-call outcomes</div></div></div>
+      <div id="handling" class="panel-body"></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><div><div class="panel-title">Demand & Activity</div><div class="panel-meta">Peak demand and outbound workload</div></div></div>
+      <div id="activity" class="panel-body"></div>
+    </div>
+  </section>
+</main>
+
+<div id="defs" class="modal" onclick="if(event.target===this)closeDefs()"><div class="modal-card">
+  <div class="modal-head"><div><h2 style="margin:0">Metric Definitions</h2><div class="subtitle">Executive metrics use the same rules as the underlying detail pages.</div></div><button class="close" onclick="closeDefs()">×</button></div>
+  <div class="def"><strong>Queued Calls</strong><p>Inbound interactions with a stored task-level queue.</p></div>
+  <div class="def"><strong>Answered</strong><p>Queued inbound calls with at least one connection.</p></div>
+  <div class="def"><strong>Missed Calls</strong><p>Queued inbound calls with no connection.</p></div>
+  <div class="def"><strong>15-Second SLA</strong><p>Queued inbound calls answered within 15 seconds divided by all queued inbound calls.</p></div>
+  <div class="def"><strong>Reported Abandoned</strong><p>The same manager-facing abandonment logic used on the Service / SLA page.</p></div>
+  <div class="def"><strong>Staffing Utilization</strong><p>Connected + wrap-up time divided by logged-in time.</p></div>
+  <div class="def"><strong>Staffing Occupancy</strong><p>Connected + wrap-up time divided by available + connected + wrap-up time.</p></div>
+</div></div>
+
+<script>
+async function reloadWithQueues(){await loadQueueOptions();await loadData();}
+
+async function loadQueueOptions(){
+  const sel=$('queueFilter');
+  if(!sel)return;
+  const previous=sel.value;
+  const p=new URLSearchParams();
+  let f=null,t=null;
+  if(typeof localStart==='function'){f=localStart($('fromDate').value);t=localAfter($('toDate').value);}
+  else if(typeof localDayStartMs==='function'){f=localDayStartMs($('fromDate').value);t=localDayAfterMs($('toDate').value);}
+  if(f!==null)p.set('from_ms',f);
+  if(t!==null)p.set('to_ms',t);
+  try{
+    const r=await fetch('/api/dashboard/queues?'+p.toString());
+    if(!r.ok)throw new Error(`HTTP ${r.status}`);
+    const d=await r.json();
+    sel.innerHTML='<option value="">All queues</option>'+(d.queues||[]).map(q=>`<option value="${String(q).replaceAll('"','&quot;')}">${q}</option>`).join('');
+    if([...sel.options].some(o=>o.value===previous))sel.value=previous;
+  }catch(e){console.warn('Queue list failed',e)}
+}
+
+const $=id=>document.getElementById(id);
+
+
+async function refreshFreshData(){
+  const dot=document.getElementById('healthDot');
+  const label=document.getElementById('healthLabel');
+  const freshness=document.getElementById('healthFreshness');
+  const updated=document.getElementById('healthUpdated');
+
+  if(dot) dot.className='health-dot health-delayed';
+  if(label) label.textContent='Collector: Refreshing…';
+  if(freshness) freshness.textContent='Pulling recent WxCC data';
+  if(updated) updated.textContent='';
+
+  try{
+    const res=await fetch('/api/collector/refresh?lookback_minutes=120&min_interval_minutes=5',{
+      method:'POST'
+    });
+    if(!res.ok){
+      throw new Error(`${res.status} ${await res.text()}`);
+    }
+    return await res.json();
+  }catch(err){
+    console.warn('Fresh data pull failed:',err);
+    return {success:false,error:String(err)};
+  }
+}
+
+async function loadHealthStatus(){
+  const dot=document.getElementById('healthDot');
+  const label=document.getElementById('healthLabel');
+  const freshness=document.getElementById('healthFreshness');
+  const updated=document.getElementById('healthUpdated');
+  if(!dot||!label)return;
+  try{
+    const res=await fetch('/api/dashboard/health-status');
+    if(!res.ok)throw new Error(`${res.status} ${res.statusText}`);
+    const h=await res.json();
+    const c=h.collector||{},d=h.data||{};
+    dot.className=`health-dot health-${c.status||h.status||'no_data'}`;
+    const names={healthy:'Healthy',delayed:'Delayed',stale:'Stale',error:'Error',no_runs:'No runs',no_data:'No data'};
+    label.textContent=`Collector: ${names[c.status||h.status]||c.status||h.status}`;
+    freshness.textContent=c.age_minutes==null?'No successful collector run':`Last successful run: ${c.age_minutes} min ago`;
+    if(d.newest_data_ms||h.newest_data_ms){
+      updated.textContent=`Data through: ${new Date(Number(d.newest_data_ms||h.newest_data_ms)).toLocaleString()}`;
+    }else{
+      updated.textContent='Data through: —';
+    }
+  }catch(e){
+    dot.className='health-dot health-stale';
+    label.textContent='Data status: Unavailable';
+    freshness.textContent='Could not load health status';
+    updated.textContent='';
+  }
+}
+
+
+
+async function refreshFreshData(){
+  const dot=document.getElementById('healthDot');
+  const label=document.getElementById('healthLabel');
+  const freshness=document.getElementById('healthFreshness');
+  const updated=document.getElementById('healthUpdated');
+
+  if(dot) dot.className='health-dot health-delayed';
+  if(label) label.textContent='Collector: Refreshing…';
+  if(freshness) freshness.textContent='Pulling recent WxCC data';
+  if(updated) updated.textContent='';
+
+  try{
+    const res=await fetch('/api/collector/refresh?lookback_minutes=120&min_interval_minutes=5',{
+      method:'POST'
+    });
+    if(!res.ok){
+      throw new Error(`${res.status} ${await res.text()}`);
+    }
+    return await res.json();
+  }catch(err){
+    console.warn('Fresh data pull failed:',err);
+    return {success:false,error:String(err)};
+  }
+}
+
+async function loadHealthStatus(){
+  const dot=document.getElementById('healthDot');
+  const label=document.getElementById('healthLabel');
+  const freshness=document.getElementById('healthFreshness');
+  const updated=document.getElementById('healthUpdated');
+  if(!dot||!label)return;
+  try{
+    const res=await fetch('/api/dashboard/health-status');
+    if(!res.ok)throw new Error(`${res.status} ${res.statusText}`);
+    const h=await res.json();
+    const c=h.collector||{},d=h.data||{};
+    dot.className=`health-dot health-${c.status||h.status||'no_data'}`;
+    const names={healthy:'Healthy',delayed:'Delayed',stale:'Stale',error:'Error',no_runs:'No runs',no_data:'No data'};
+    label.textContent=`Collector: ${names[c.status||h.status]||c.status||h.status}`;
+    freshness.textContent=c.age_minutes==null?'No successful collector run':`Last successful run: ${c.age_minutes} min ago`;
+    if(d.newest_data_ms||h.newest_data_ms){
+      updated.textContent=`Data through: ${new Date(Number(d.newest_data_ms||h.newest_data_ms)).toLocaleString()}`;
+    }else{
+      updated.textContent='Data through: —';
+    }
+  }catch(e){
+    dot.className='health-dot health-stale';
+    label.textContent='Data status: Unavailable';
+    freshness.textContent='Could not load health status';
+    updated.textContent='';
+  }
+}
+
+function openDefs(){$('defs').classList.add('open')}function closeDefs(){$('defs').classList.remove('open')}
+function pct(v){return `${Number(v||0).toFixed(1)}%`}
+function duration(sec){
+  sec=Number(sec||0);
+  if(!sec)return '—';
+  if(sec<60)return `${Math.round(sec)}s`;
+  if(sec<3600)return `${Math.floor(sec/60)}m ${Math.round(sec%60)}s`;
+  return `${Math.floor(sec/3600)}h ${Math.round((sec%3600)/60)}m`;
+}
+function hours(v){return `${Number(v||0).toFixed(1)}h`}
+function localStart(v){if(!v)return null;return new Date(v+'T00:00:00').getTime()}
+function localAfter(v){if(!v)return null;const d=new Date(v+'T00:00:00');d.setDate(d.getDate()+1);return d.getTime()}
+function setDefaults(){const now=new Date(),from=new Date(now);from.setDate(now.getDate()-6);$('toDate').value=now.toISOString().slice(0,10);$('fromDate').value=from.toISOString().slice(0,10)}
+    const qf=$('queueFilter')?.value;if(qf)p.set('queue_name',qf);
+function apiUrl(){const p=new URLSearchParams(),f=localStart($('fromDate').value),t=localAfter($('toDate').value);if(f!==null)p.set('from_ms',f);if(t!==null)p.set('to_ms',t);p.set('timezone',Intl.DateTimeFormat().resolvedOptions().timeZone||'America/Detroit');return '/api/dashboard/executive-overview?'+p.toString()}
+
+function renderAttention(rows){
+  $('attention').innerHTML=(rows||[]).map(r=>{
+    let value=r.value;
+    if(r.unit==='percent')value=pct(r.value);
+    if(r.unit==='seconds')value=duration(r.value);
+    if(r.unit==='calls')value=`${r.value} calls`;
+    let ctx='';
+    if(r.type==='lowest_sla_queue')ctx=`${r.context.answered} answered · ${r.context.abandoned} reported abandoned`;
+    else if(r.type==='highest_missed_rate_queue')ctx=`${r.context.missed} missed · ${r.context.called_back} called back`;
+    else if(r.type==='longest_wait_queue')ctx=`Average ${duration(r.context.average_wait_seconds)} · ${r.context.waits_over_5_minutes} waits over 5m`;
+    else if(r.type==='busiest_inbound_hour')ctx=`Peak hour: ${r.context.hour_label}`;
+    return `<div class="attention-card"><div class="attention-label">${r.label}</div><div class="attention-title">${r.queue_name||r.context.hour_label||'—'}</div><div class="attention-value">${value}</div><div class="attention-context">${ctx}</div></div>`;
+  }).join('');
+}
+function renderStaffing(s){
+  const rows=[
+    ['Agents Logged In',s.agents_logged_in],
+    ['Data Complete',pct(s.staffing_data_complete_percent)],
+    ['Logged-In Hours',hours(s.total_logged_in_hours)],
+    ['Available Hours',hours(s.total_available_hours)],
+    ['Utilization',pct(s.utilization_percent)],
+    ['Occupancy',pct(s.occupancy_percent)]
+  ];
+  $('staffing').innerHTML=rows.map(([a,b])=>`<div class="stat"><div class="stat-name">${a}</div><div class="stat-value">${b}</div></div>`).join('');
+}
+function row(a,b){return `<div class="summary-row"><span>${a}</span><strong>${b}</strong></div>`}
+function renderHandling(o){
+  $('handling').innerHTML=
+    row('Reported Abandoned',o.reported_abandoned)+
+    row('Missed Call Rate',pct(o.missed_call_rate))+
+    row('Missed Calls Called Back',`${o.missed_calls_called_back} (${pct(o.missed_calls_called_back_percent)})`)+
+    row('Waits Over 5 Minutes',o.waits_over_5_minutes)+
+    row('Answered Within 15 Seconds',o.answered_within_15_seconds);
+}
+function renderActivity(o){
+  const peakHour=o.busiest_inbound_hour||{};
+  const peakDay=o.busiest_inbound_day||{};
+  $('activity').innerHTML=
+    row('Outbound Calls',o.outbound_calls)+
+    row('Outbound Connected',o.outbound_connected)+
+    row('Outbound Talk Time',duration(o.outbound_talk_seconds))+
+    row('Busiest Inbound Hour',`${peakHour.label||'—'} · ${peakHour.inbound||0} calls`)+
+    row('Busiest Inbound Day',`${peakDay.day_name||'—'} · ${peakDay.inbound||0} calls`);
+}
+async function loadData(){
+  try{
+    const res=await fetch(apiUrl());if(!res.ok)throw new Error(`${res.status} ${res.statusText}`);
+    const d=await res.json(),o=d.overview;
+    $('inbound').textContent=o.inbound_calls;
+    $('queued').textContent=o.queued_calls;
+    $('answered').textContent=o.answered;
+    $('missed').textContent=o.missed_calls;
+    $('sla').textContent=pct(o.sla_15_seconds);
+    $('avgWait').textContent=duration(o.average_queue_wait_seconds);
+    $('maxWait').textContent=duration(o.longest_queue_wait_seconds);
+    $('outShare').textContent=pct(o.outbound_share);
+    renderAttention(d.attention);renderStaffing(d.staffing);renderHandling(o);renderActivity(o);
+  }catch(e){$('attention').innerHTML=`<div class="error">Could not load executive data: ${e.message}</div>`}
+}
+setDefaults();
+(async()=>{
+  await refreshFreshData();
+  await loadQueueOptions();
+    await loadData();
+  await loadHealthStatus();
+})();
+</script>
+</body></html>
+"""
