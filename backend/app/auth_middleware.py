@@ -23,23 +23,26 @@ _STAFFING_QUEUE_FILTER_HTML = (
     '<select id="queueFilter"><option value="">All queues</option></select></div>'
 )
 
+_CALL_DEMAND_BROKEN_URL_SNIPPET = (
+    "    const qf=$('queueFilter')?.value;if(qf)p.set('queue_name',qf);\n"
+    "function url(){const p=new URLSearchParams();const f=localStart($('fromDate').value),t=localAfter($('toDate').value);if(f!==null)p.set('from_ms',f);if(t!==null)p.set('to_ms',t);p.set('timezone',Intl.DateTimeFormat().resolvedOptions().timeZone||'America/Detroit');return '/api/dashboard/call-demand?'+p.toString()}"
+)
 
-async def _remove_staffing_queue_filter(response):
-    """Presentation-only cleanup for the Staffing page.
+_CALL_DEMAND_FIXED_URL_SNIPPET = (
+    "function url(){const p=new URLSearchParams();const f=localStart($('fromDate').value),t=localAfter($('toDate').value);if(f!==null)p.set('from_ms',f);if(t!==null)p.set('to_ms',t);p.set('timezone',Intl.DateTimeFormat().resolvedOptions().timeZone||'America/Detroit');const qf=$('queueFilter')?.value;if(qf)p.set('queue_name',qf);return '/api/dashboard/call-demand?'+p.toString()}"
+)
 
-    The Staffing report is agent/session based, so a queue selector is not
-    appropriate there. The existing page JavaScript already treats a missing
-    queueFilter element as optional, so removing this control is safe and does
-    not change the staffing API or calculations.
-    """
+
+async def _rewrite_html_response(response, transform):
     content_type = response.headers.get("content-type", "")
     if "text/html" not in content_type.lower():
         return response
 
     body = b"".join([chunk async for chunk in response.body_iterator])
     text = body.decode("utf-8")
+    updated = transform(text)
 
-    if _STAFFING_QUEUE_FILTER_HTML not in text:
+    if updated == text:
         return Response(
             content=body,
             status_code=response.status_code,
@@ -48,17 +51,35 @@ async def _remove_staffing_queue_filter(response):
             background=response.background,
         )
 
-    text = text.replace(_STAFFING_QUEUE_FILTER_HTML, "", 1)
-
     headers = dict(response.headers)
     headers.pop("content-length", None)
 
     return Response(
-        content=text,
+        content=updated,
         status_code=response.status_code,
         headers=headers,
         media_type="text/html",
         background=response.background,
+    )
+
+
+async def _remove_staffing_queue_filter(response):
+    """Presentation-only cleanup for the Staffing page."""
+    return await _rewrite_html_response(
+        response,
+        lambda text: text.replace(_STAFFING_QUEUE_FILTER_HTML, "", 1),
+    )
+
+
+async def _fix_call_demand_queue_filter(response):
+    """Fix the Call Demand page so the selected queue is sent to the API."""
+    return await _rewrite_html_response(
+        response,
+        lambda text: text.replace(
+            _CALL_DEMAND_BROKEN_URL_SNIPPET,
+            _CALL_DEMAND_FIXED_URL_SNIPPET,
+            1,
+        ),
     )
 
 
@@ -92,6 +113,8 @@ class WebexAuthMiddleware(BaseHTTPMiddleware):
             response = await call_next(request)
             if path == "/staffing":
                 response = await _remove_staffing_queue_filter(response)
+            elif path == "/call-demand":
+                response = await _fix_call_demand_queue_filter(response)
             return response
 
         if path.startswith("/api/"):
