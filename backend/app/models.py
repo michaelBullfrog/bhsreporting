@@ -211,3 +211,18 @@ class CallingOutboundCall(Base):
 
 Index("ix_calling_outbound_called_start", CallingOutboundCall.called_number, CallingOutboundCall.start_time)
 Index("ix_calling_outbound_user_start", CallingOutboundCall.user_uuid, CallingOutboundCall.start_time)
+
+
+class CallingCollectorRun(Base):
+    __tablename__ = "calling_collector_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    from_ms: Mapped[int] = mapped_column(BigInteger)
+    to_ms: Mapped[int] = mapped_column(BigInteger)
+    success: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    cdr_records: Mapped[int] = mapped_column(Integer, default=0)
+    voicemail_events: Mapped[int] = mapped_column(Integer, default=0)
+    outbound_calls: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str | None] = mapped_column(Text)
