@@ -70,6 +70,38 @@ services:
       - key: WXCC_TOKEN_URL
         value: https://webexapis.com/v1/access_token
 
+  - type: cron
+    name: wxcc-analytics-voicemail
+    runtime: python
+    schedule: "*/15 * * * *"
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m backend.app.jobs.collect_voicemail_recent
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: wxcc-analytics-db
+          property: connectionString
+      - key: WEBEX_CALLING_CDR_BASE_URL
+        value: https://analytics-calling.webexapis.com
+      - key: WEBEX_CALLING_ACCESS_TOKEN
+        sync: false
+      - key: WEBEX_CALLING_CLIENT_ID
+        sync: false
+      - key: WEBEX_CALLING_CLIENT_SECRET
+        sync: false
+      - key: WEBEX_CALLING_REFRESH_TOKEN
+        sync: false
+      - key: WEBEX_CALLING_TOKEN_URL
+        value: https://webexapis.com/v1/access_token
+      - key: WEBEX_CALLING_COLLECTOR_LOOKBACK_MINUTES
+        value: "30"
+      - key: SERVICE_VM_GROUP_UUID
+        value: 2c655ada-1784-4002-9266-2f2f66839967
+      - key: SERVICE_VM_GROUP_NAME
+        value: Service After Hours Vmail
+      - key: SERVICE_VM_EXTENSION
+        value: "6005"
+
 databases:
   - name: wxcc-analytics-db
     plan: basic-256mb
