@@ -10,6 +10,7 @@ from ..database import SessionLocal
 from ..models import (
     AgentSession,
     AgentStateActivity,
+    CallingCollectorRun,
     CallingOutboundCall,
     CallingVoicemailEvent,
     CollectorRun,
@@ -75,6 +76,17 @@ def main() -> None:
             .order_by(CollectorRun.finished_at.desc().nullslast(), CollectorRun.started_at.desc())
             .first()
         )
+        last_calling_run = (
+            db.query(CallingCollectorRun)
+            .order_by(CallingCollectorRun.started_at.desc())
+            .first()
+        )
+        last_calling_success = (
+            db.query(CallingCollectorRun)
+            .filter(CallingCollectorRun.success.is_(True))
+            .order_by(CallingCollectorRun.finished_at.desc().nullslast(), CallingCollectorRun.started_at.desc())
+            .first()
+        )
 
         newest_interaction = db.query(func.max(Interaction.created_time)).scalar()
         newest_interaction_end = db.query(func.max(Interaction.ended_time)).scalar()
@@ -97,10 +109,22 @@ def main() -> None:
         print(f"Newest WxCC leg:               {fmt_ms(newest_leg)}")
         print(f"Newest agent session:          {fmt_ms(newest_agent_session)}")
         print(f"Newest agent state activity:   {fmt_ms(newest_agent_state)}")
+
+        print("\n--- WEBEX CALLING / VOICEMAIL COLLECTOR ---")
+        print(f"Latest Calling collector run:  {fmt_dt(last_calling_run.started_at if last_calling_run else None)}")
+        print(f"Calling collector success:     {getattr(last_calling_run, 'success', None)}")
+        if last_calling_run:
+            print(f"Calling collector window end:  {fmt_ms(last_calling_run.to_ms)}")
+            print(f"Calling CDR records returned:  {last_calling_run.cdr_records}")
+            print(f"Voicemail events in run:       {last_calling_run.voicemail_events}")
+            print(f"Outbound calls in run:         {last_calling_run.outbound_calls}")
+            if last_calling_run.error:
+                print(f"Calling collector error:       {last_calling_run.error}")
+        print(f"Latest successful Calling run: {fmt_dt(last_calling_success.finished_at if last_calling_success else None)}")
         print(f"Newest voicemail event:        {fmt_ms(newest_vm)}")
-        print(f"Voicemail last collected at:   {fmt_dt(newest_vm_collected)}")
+        print(f"Voicemail row collected at:    {fmt_dt(newest_vm_collected)}")
         print(f"Newest Calling outbound call:  {fmt_ms(newest_calling_outbound)}")
-        print(f"Calling outbound collected at: {fmt_dt(newest_calling_outbound_collected)}")
+        print(f"Outbound row collected at:     {fmt_dt(newest_calling_outbound_collected)}")
 
         cutoff_ms = int((now - timedelta(days=8)).timestamp() * 1000)
         interactions = db.query(Interaction).filter(Interaction.created_time >= cutoff_ms).all()
