@@ -73,7 +73,7 @@ services:
   - type: cron
     name: wxcc-analytics-voicemail
     runtime: python
-    schedule: "*/15 * * * *"
+    schedule: "0 */2 * * *"
     buildCommand: pip install -r requirements.txt
     startCommand: python -m backend.app.jobs.collect_voicemail_recent
     envVars:
@@ -94,7 +94,7 @@ services:
       - key: WEBEX_CALLING_TOKEN_URL
         value: https://webexapis.com/v1/access_token
       - key: WEBEX_CALLING_COLLECTOR_LOOKBACK_MINUTES
-        value: "30"
+        value: "150"
       - key: SERVICE_VM_GROUP_UUID
         value: 2c655ada-1784-4002-9266-2f2f66839967
       - key: SERVICE_VM_GROUP_NAME
