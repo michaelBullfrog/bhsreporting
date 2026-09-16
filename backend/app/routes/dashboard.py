@@ -6,6 +6,125 @@ from ..models import Interaction, InteractionLeg
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 
+
+def _abandonment_definition() -> str:
+    return (
+        "BHS reporting policy: a queued inbound interaction is Answered when "
+        "connected_count > 0; otherwise it is Abandoned. Webex terminationType "
+        "is retained separately for diagnostics and does not control the "
+        "manager-facing abandonment KPI."
+    )
+
+
+def _apply_call_demand_policy(result: dict) -> dict:
+    definitions = result.setdefault("definitions", {})
+    definitions["abandoned"] = _abandonment_definition()
+    definitions["raw_abandoned"] = (
+        "Diagnostic only: Webex termination_type == abandoned"
+    )
+
+    o = result.get("overview") or {}
+    queued = int(o.get("queued_inbound") or 0)
+    answered = int(o.get("queued_answered") or 0)
+    reported = max(queued - answered, 0)
+    o["queued_abandoned"] = reported
+    o["reported_abandoned"] = reported
+    o["queued_accounted_for"] = answered + reported
+    o["queued_reconciles"] = queued == answered + reported
+    o["queued_abandon_rate"] = round(reported / queued * 100, 2) if queued else 0
+
+    for row in result.get("queues") or []:
+        offered = int(row.get("offered") or 0)
+        ans = int(row.get("answered") or 0)
+        abandoned = max(offered - ans, 0)
+        row["abandoned"] = abandoned
+        row["reported_abandoned"] = abandoned
+        row["accounted_for"] = ans + abandoned
+        row["reconciles"] = offered == ans + abandoned
+        row["abandon_rate"] = round(abandoned / offered * 100, 2) if offered else 0
+
+    for row in result.get("daily") or []:
+        queued = int(row.get("queued_inbound") or 0)
+        ans = int(row.get("queued_answered") or 0)
+        abandoned = max(queued - ans, 0)
+        row["queued_abandoned"] = abandoned
+        row["reported_abandoned"] = abandoned
+        row["queued_abandon_rate"] = round(abandoned / queued * 100, 2) if queued else 0
+
+    return result
+
+
+def _apply_service_policy(result: dict) -> dict:
+    definitions = result.setdefault("definitions", {})
+    definitions["abandoned"] = _abandonment_definition()
+    definitions["raw_abandoned"] = (
+        "Diagnostic only: Webex termination_type == abandoned"
+    )
+
+    def normalize(row: dict):
+        queued = int(row.get("queued_inbound") or 0)
+        answered = int(row.get("answered") or 0)
+        abandoned = max(queued - answered, 0)
+        row["abandoned"] = abandoned
+        row["reported_abandoned"] = abandoned
+        row["abandon_rate"] = round(abandoned / queued * 100, 2) if queued else 0
+
+    normalize(result.get("overview") or {})
+    for row in result.get("queues") or []:
+        normalize(row)
+    for row in result.get("hourly") or []:
+        normalize(row)
+
+    return result
+
+
+def _apply_missed_policy(result: dict) -> dict:
+    definitions = result.setdefault("definitions", {})
+    definitions["missed"] = (
+        "Queued inbound interaction with connected_count == 0"
+    )
+    definitions["abandoned"] = _abandonment_definition()
+    definitions["raw_abandoned"] = (
+        "Diagnostic only: missed interaction with Webex termination_type == abandoned"
+    )
+
+    def normalize(row: dict):
+        missed = int(row.get("missed") or 0)
+        raw_abandoned = int(row.get("abandoned") or 0)
+        other = int(row.get("other_missed") or 0)
+        row["raw_abandoned"] = raw_abandoned
+        row["webex_non_abandoned_missed"] = other
+        row["abandoned"] = missed
+        row["reported_abandoned"] = missed
+        row["other_missed"] = 0
+
+    normalize(result.get("overview") or {})
+    for row in result.get("queues") or []:
+        normalize(row)
+    for row in result.get("daily") or []:
+        normalize(row)
+
+    return result
+
+
+def _apply_executive_policy(result: dict) -> dict:
+    definitions = result.setdefault("definitions", {})
+    definitions["answered"] = (
+        "Queued inbound interactions with connected_count > 0"
+    )
+    definitions["reported_abandoned"] = _abandonment_definition()
+
+    o = result.get("overview") or {}
+    queued = int(o.get("queued_calls") or 0)
+    answered = int(o.get("answered") or 0)
+    abandoned = max(queued - answered, 0)
+    o["reported_abandoned"] = abandoned
+    o["abandoned"] = abandoned
+    o["missed_calls"] = abandoned
+    o["abandon_rate"] = round(abandoned / queued * 100, 2) if queued else 0
+    return result
+
+
 @router.get("/data-coverage")
 def get_data_coverage(
     db: Session = Depends(get_db),
@@ -32,6 +151,7 @@ def get_overview(
 ):
     return overview(db, from_ms, to_ms)
 
+
 @router.get("/agents")
 def get_agents(
     from_ms: int | None = Query(None),
@@ -39,7 +159,6 @@ def get_agents(
     db: Session = Depends(get_db),
 ):
     return agent_summary(db, from_ms, to_ms)
-
 
 
 @router.get("/queues")
@@ -79,6 +198,7 @@ def get_executive_overview(
         timezone_name=timezone_name,
         queue_name=queue_name,
     )
+    result = _apply_executive_policy(result)
     result["backend_version"] = BACKEND_VERSION
     return result
 
@@ -118,6 +238,7 @@ def get_missed_callbacks(
         timezone_name=timezone_name,
         queue_name=queue_name,
     )
+    result = _apply_missed_policy(result)
     result["backend_version"] = BACKEND_VERSION
     return result
 
@@ -140,6 +261,7 @@ def get_service_sla(
         timezone_name=timezone_name,
         queue_name=queue_name,
     )
+    result = _apply_service_policy(result)
     result["backend_version"] = BACKEND_VERSION
     return result
 
@@ -159,17 +281,19 @@ def get_call_demand(
         timezone_name=timezone_name,
         queue_name=queue_name,
     )
+    result = _apply_call_demand_policy(result)
     result["backend_version"] = BACKEND_VERSION
     return result
 
 
-BACKEND_VERSION = "9.1.0"
+BACKEND_VERSION = "9.3.0"
+
 
 @router.get("/version")
 def get_version():
     return {
         "backend_version": BACKEND_VERSION,
-        "staffing_route": "v9.1.0-service-after-hours-voicemail",
+        "staffing_route": "v9.3.0-bhs-queued-unanswered-abandonment-policy",
     }
 
 
