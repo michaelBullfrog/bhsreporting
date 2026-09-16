@@ -113,19 +113,19 @@ _CALL_DEMAND_SUMMARY_SYNC = r"""
 
     const inbound=makeGroup(
       'inbound-flow',
-      '1. Inbound Call Flow',
-      'Start here: every inbound interaction is either queued or handled outside the queue in IVR/routing.',
+      'Inbound Call Flow',
+      'Every inbound interaction is either queued or handled outside the queue in IVR/routing.',
       ['inbound','queued','nonQueuedKpi']
     );
     const results=makeGroup(
       'queue-results',
-      '2. Queue Results',
+      'Queue Results',
       'Only calls that entered a queue are included here. Queued Calls = Answered + Abandoned.',
       ['answered','abandoned','answerRate','abandonRate']
     );
     const supporting=makeGroup(
       'supporting',
-      '3. Supporting Activity & Wait',
+      'Supporting Activity & Wait',
       'Additional context. Outbound is separate from inbound flow and does not belong inside queued results.',
       ['outboundSummary','avgWait','maxWait','peakHour']
     );
@@ -133,8 +133,6 @@ _CALL_DEMAND_SUMMARY_SYNC = r"""
     [inbound,results,supporting].forEach(g=>{if(g)wrapper.appendChild(g)});
     original.parentNode.insertBefore(wrapper,original);
 
-    // Move any remaining cards into supporting context instead of leaving
-    // unexplained KPI cards in a separate row.
     const supportingGrid=supporting?.querySelector('.call-demand-kpi-group-grid');
     if(supportingGrid){
       Array.from(original.querySelectorAll('.kpi')).forEach(card=>{
