@@ -61,12 +61,27 @@ class TokenManager:
 
     def _load_or_seed(self, db) -> TokenState:
         row = db.get(WxccOAuthToken, self.TOKEN_KEY)
+        env_access = settings.wxcc_access_token or ""
+        env_refresh = settings.wxcc_refresh_token or ""
+
         if row:
+            # Environment values are bootstrap/fallback only. Never overwrite a
+            # token that has already rotated in PostgreSQL, but allow a missing
+            # field to be filled later (for example after WXCC_REFRESH_TOKEN is
+            # temporarily blanked during recovery from tokenlimit_reached).
+            changed = False
+            if not row.access_token and env_access:
+                row.access_token = env_access
+                changed = True
+            if not row.refresh_token and env_refresh:
+                row.refresh_token = env_refresh
+                changed = True
+            if changed:
+                row.updated_at = self._utcnow()
+                db.flush()
             return self._state_from_row(row)
 
-        access_token = settings.wxcc_access_token or ""
-        refresh_token = settings.wxcc_refresh_token or ""
-        if not access_token and not refresh_token:
+        if not env_access and not env_refresh:
             raise TokenRefreshError(
                 "No shared WxCC token exists and no bootstrap token is configured. "
                 "Set WXCC_ACCESS_TOKEN and, for automatic renewal, WXCC_REFRESH_TOKEN."
@@ -77,19 +92,24 @@ class TokenManager:
         # auth failure. Once refreshed, expires_at is persisted from expires_in.
         row = WxccOAuthToken(
             token_key=self.TOKEN_KEY,
-            access_token=access_token or None,
-            refresh_token=refresh_token or None,
+            access_token=env_access or None,
+            refresh_token=env_refresh or None,
             expires_at=None,
             updated_at=self._utcnow(),
         )
         db.add(row)
-        db.commit()
+        db.flush()
         return self._state_from_row(row)
 
     def _load_state(self) -> TokenState:
         db = SessionLocal()
         try:
-            return self._load_or_seed(db)
+            state = self._load_or_seed(db)
+            db.commit()
+            return state
+        except Exception:
+            db.rollback()
+            raise
         finally:
             db.close()
 
@@ -155,8 +175,8 @@ class TokenManager:
     def _refresh_under_lock(self, failed_access_token: str = "") -> TokenState:
         db = SessionLocal()
         try:
-            # Transaction-scoped lock. It is automatically released on
-            # commit/rollback/connection close, including exceptions.
+            # Transaction-scoped lock. It remains held through the token refresh
+            # and DB update, then releases automatically on commit/rollback.
             db.execute(
                 text("SELECT pg_advisory_xact_lock(:lock_id)"),
                 {"lock_id": self.ADVISORY_LOCK_ID},
