@@ -226,3 +226,13 @@ class CallingCollectorRun(Base):
     voicemail_events: Mapped[int] = mapped_column(Integer, default=0)
     outbound_calls: Mapped[int] = mapped_column(Integer, default=0)
     error: Mapped[str | None] = mapped_column(Text)
+
+
+class WxccOAuthToken(Base):
+    __tablename__ = "wxcc_oauth_tokens"
+
+    token_key: Mapped[str] = mapped_column(String(50), primary_key=True, default="wxcc")
+    access_token: Mapped[str | None] = mapped_column(Text)
+    refresh_token: Mapped[str | None] = mapped_column(Text)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
