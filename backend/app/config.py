@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     wxcc_token_url: str = "https://webexapis.com/v1/access_token"
 
     collector_lookback_minutes: int = 30
+    collector_agent_lookback_hours: int = 24
     collector_max_window_hours: int = 24
 
     # Webex Calling Service App credentials used only for Detailed Call History.
