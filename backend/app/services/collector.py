@@ -19,6 +19,8 @@ def collect_window(
     to_ms: int,
     *,
     include_agent_sessions: bool = True,
+    agent_from_ms: int | None = None,
+    agent_to_ms: int | None = None,
 ) -> dict:
     run = CollectorRun(from_ms=from_ms, to_ms=to_ms)
     db.add(run)
@@ -36,18 +38,20 @@ def collect_window(
     agent_session_error = None
 
     try:
-        # Call/task history is the primary reporting dataset and is fetched
-        # independently from staffing history.
+        # Call/task history uses the normal short rolling collection window.
         tasks = client.get_tasks(from_ms, to_ms)
         details = client.get_task_details(from_ms, to_ms)
         legs = client.get_task_legs(from_ms, to_ms)
 
-        # Agent-session history is useful for staffing, but an older WxCC
-        # agent-session pagination/schema error must not block call-history
-        # ingestion.
+        # Agent-session history can use a wider window than call history so an
+        # agent who signed in earlier in the day is still returned on later
+        # collector runs. If no separate window is supplied (backfill/nightly
+        # reconcile), use the caller's normal window.
         if include_agent_sessions:
             try:
-                agent_sessions = client.get_agent_sessions(from_ms, to_ms)
+                session_from_ms = agent_from_ms if agent_from_ms is not None else from_ms
+                session_to_ms = agent_to_ms if agent_to_ms is not None else to_ms
+                agent_sessions = client.get_agent_sessions(session_from_ms, session_to_ms)
             except Exception as exc:
                 agent_sessions = []
                 agent_session_error = str(exc)
@@ -157,6 +161,9 @@ def collect_window(
             )
             _upsert(db, InteractionLeg, "leg_id", item["id"], values)
 
+        session_source_from = agent_from_ms if agent_from_ms is not None else from_ms
+        session_source_to = agent_to_ms if agent_to_ms is not None else to_ms
+
         for session in agent_sessions:
             session_id = session.get("agentSessionId")
             if not session_id:
@@ -173,8 +180,8 @@ def collect_window(
             db.add(RawWxccRecord(
                 record_type="agentSession",
                 webex_id=session_id,
-                source_from=from_ms,
-                source_to=to_ms,
+                source_from=session_source_from,
+                source_to=session_source_to,
                 payload=session,
             ))
 
@@ -266,6 +273,8 @@ def collect_window(
             "task_legs": len(legs),
             "agent_sessions": len(agent_sessions),
             "agent_sessions_requested": include_agent_sessions,
+            "agent_from": session_source_from if include_agent_sessions else None,
+            "agent_to": session_source_to if include_agent_sessions else None,
             "agent_session_error": agent_session_error,
         }
 
