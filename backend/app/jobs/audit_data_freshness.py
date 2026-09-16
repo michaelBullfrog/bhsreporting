@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import func
 
-from ..database import SessionLocal
+from ..database import Base, SessionLocal, engine
 from ..models import (
     AgentSession,
     AgentStateActivity,
@@ -16,6 +16,7 @@ from ..models import (
     CollectorRun,
     Interaction,
     InteractionLeg,
+    WxccOAuthToken,
 )
 
 TZ = ZoneInfo("America/Detroit")
@@ -63,6 +64,9 @@ def main() -> None:
     print("=== BHS DATA FRESHNESS AUDIT ===")
     print(f"Audit time: {now.strftime('%Y-%m-%d %I:%M:%S %p %Z')}")
 
+    # The audit may be run before a collector process after deployment.
+    Base.metadata.create_all(bind=engine, tables=[WxccOAuthToken.__table__])
+
     db = SessionLocal()
     try:
         last_run = (
@@ -87,6 +91,7 @@ def main() -> None:
             .order_by(CallingCollectorRun.finished_at.desc().nullslast(), CallingCollectorRun.started_at.desc())
             .first()
         )
+        wxcc_token = db.get(WxccOAuthToken, "wxcc")
 
         newest_interaction = db.query(func.max(Interaction.created_time)).scalar()
         newest_interaction_end = db.query(func.max(Interaction.ended_time)).scalar()
@@ -109,6 +114,13 @@ def main() -> None:
         print(f"Newest WxCC leg:               {fmt_ms(newest_leg)}")
         print(f"Newest agent session:          {fmt_ms(newest_agent_session)}")
         print(f"Newest agent state activity:   {fmt_ms(newest_agent_state)}")
+
+        print("\n--- WxCC OAUTH TOKEN STORE ---")
+        print(f"Shared token row present:      {bool(wxcc_token)}")
+        print(f"Access token stored:           {bool(wxcc_token and wxcc_token.access_token)}")
+        print(f"Refresh token stored:          {bool(wxcc_token and wxcc_token.refresh_token)}")
+        print(f"Known access token expiry:     {fmt_dt(wxcc_token.expires_at if wxcc_token else None)}")
+        print(f"Token row last updated:        {fmt_dt(wxcc_token.updated_at if wxcc_token else None)}")
 
         print("\n--- WEBEX CALLING / VOICEMAIL COLLECTOR ---")
         print(f"Latest Calling collector run:  {fmt_dt(last_calling_run.started_at if last_calling_run else None)}")
