@@ -55,25 +55,95 @@ _CALL_DEMAND_ABANDONED_WITH_OUTBOUND = (
     _CALL_DEMAND_ABANDONED_CARD
     + '<div class="kpi"><div class="kpi-label">Outbound</div>'
       '<div class="kpi-value" id="outboundSummary">—</div>'
-      '<div class="kpi-foot">outdial interactions</div></div>'
+      '<div class="kpi-foot">separate outbound activity</div></div>'
 )
 
-_CALL_DEMAND_PANEL_TITLE = (
-    '<div class="panel-title">Non-Queued Inbound Outcomes</div>'
-)
-
-_CALL_DEMAND_PANEL_TITLE_UPDATED = (
-    '<div class="panel-title">Non-Queued / IVR Outcomes</div>'
-)
+_CALL_DEMAND_PANEL_TITLE = '<div class="panel-title">Non-Queued Inbound Outcomes</div>'
+_CALL_DEMAND_PANEL_TITLE_UPDATED = '<div class="panel-title">Non-Queued / IVR Outcomes</div>'
 
 _CALL_DEMAND_SUMMARY_SYNC = r"""
 <style>
-@media (min-width:1201px){
-  .kpis{grid-template-columns:repeat(4,minmax(150px,1fr))!important;}
-}
+.call-demand-kpi-groups{display:grid;gap:16px;margin-bottom:20px}
+.call-demand-kpi-group{background:#fff;border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:var(--shadow)}
+.call-demand-kpi-group-head{display:flex;justify-content:space-between;gap:14px;align-items:flex-end;margin-bottom:12px;flex-wrap:wrap}
+.call-demand-kpi-group-title{font-size:14px;font-weight:900;color:var(--ink)}
+.call-demand-kpi-group-sub{font-size:12px;color:var(--muted);margin-top:3px;line-height:1.4}
+.call-demand-kpi-group-grid{display:grid;grid-template-columns:repeat(4,minmax(150px,1fr));gap:12px}
+.call-demand-kpi-group.inbound-flow{border-left:4px solid #0a5fa8}
+.call-demand-kpi-group.queue-results{border-left:4px solid #2e8b57}
+.call-demand-kpi-group.supporting{border-left:4px solid #6d7f8f}
+.call-demand-kpi-group .kpi{box-shadow:none;margin:0;background:#f9fbfd}
+.call-demand-kpi-group.inbound-flow .kpi:first-child{background:#eef6fc}
+.call-demand-kpi-group.queue-results .kpi:nth-child(1){background:#eff8f2}
+.call-demand-kpi-group.queue-results .kpi:nth-child(2){background:#fff4f1}
+.call-demand-flow-note{font-size:11px;color:var(--muted);font-weight:700}
+@media(max-width:1000px){.call-demand-kpi-group-grid{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:620px){.call-demand-kpi-group-grid{grid-template-columns:1fr}}
 </style>
 <script>
 (function(){
+  function cardByValueId(id){
+    const el=document.getElementById(id);
+    return el ? el.closest('.kpi') : null;
+  }
+
+  function makeGroup(cls,title,sub,ids){
+    const cards=ids.map(cardByValueId).filter(Boolean);
+    if(!cards.length)return null;
+    const section=document.createElement('section');
+    section.className='call-demand-kpi-group '+cls;
+    const head=document.createElement('div');
+    head.className='call-demand-kpi-group-head';
+    head.innerHTML='<div><div class="call-demand-kpi-group-title">'+title+'</div><div class="call-demand-kpi-group-sub">'+sub+'</div></div>';
+    const grid=document.createElement('div');
+    grid.className='call-demand-kpi-group-grid';
+    cards.forEach(c=>grid.appendChild(c));
+    section.appendChild(head);
+    section.appendChild(grid);
+    return section;
+  }
+
+  function organizeBhsKpis(){
+    if(document.querySelector('.call-demand-kpi-groups'))return;
+    const original=document.querySelector('section.kpis');
+    if(!original)return;
+
+    const wrapper=document.createElement('div');
+    wrapper.className='call-demand-kpi-groups';
+
+    const inbound=makeGroup(
+      'inbound-flow',
+      '1. Inbound Call Flow',
+      'Start here: every inbound interaction is either queued or handled outside the queue in IVR/routing.',
+      ['inbound','queued','nonQueuedKpi']
+    );
+    const results=makeGroup(
+      'queue-results',
+      '2. Queue Results',
+      'Only calls that entered a queue are included here. Queued Calls = Answered + Abandoned.',
+      ['answered','abandoned','answerRate','abandonRate']
+    );
+    const supporting=makeGroup(
+      'supporting',
+      '3. Supporting Activity & Wait',
+      'Additional context. Outbound is separate from inbound flow and does not belong inside queued results.',
+      ['outboundSummary','avgWait','maxWait','peakHour']
+    );
+
+    [inbound,results,supporting].forEach(g=>{if(g)wrapper.appendChild(g)});
+    original.parentNode.insertBefore(wrapper,original);
+
+    // Move any remaining cards into supporting context instead of leaving
+    // unexplained KPI cards in a separate row.
+    const supportingGrid=supporting?.querySelector('.call-demand-kpi-group-grid');
+    if(supportingGrid){
+      Array.from(original.querySelectorAll('.kpi')).forEach(card=>{
+        if(card.style.display!=='none')supportingGrid.appendChild(card);
+      });
+    }
+    original.style.display='none';
+  }
+
   function syncBhsCallDemandSummary(){
     const sourceNonQueued=document.getElementById('nonQueuedCount');
     const targetNonQueued=document.getElementById('nonQueuedKpi');
@@ -90,6 +160,7 @@ _CALL_DEMAND_SUMMARY_SYNC = r"""
 
   document.addEventListener('DOMContentLoaded',function(){
     syncBhsCallDemandSummary();
+    organizeBhsKpis();
     const nonQueued=document.getElementById('nonQueuedCount');
     const outbound=document.getElementById('outbound');
     const observer=new MutationObserver(syncBhsCallDemandSummary);
@@ -148,34 +219,17 @@ def _transform_call_demand(text: str) -> str:
         _CALL_DEMAND_FIXED_URL_SNIPPET,
         1,
     )
-    updated = updated.replace(
-        _CALL_DEMAND_QUEUED_CARD,
-        _CALL_DEMAND_SUMMARY_CARDS,
-        1,
-    )
-    updated = updated.replace(
-        _CALL_DEMAND_ABANDONED_CARD,
-        _CALL_DEMAND_ABANDONED_WITH_OUTBOUND,
-        1,
-    )
-    updated = updated.replace(
-        _CALL_DEMAND_PANEL_TITLE,
-        _CALL_DEMAND_PANEL_TITLE_UPDATED,
-        1,
-    )
+    updated = updated.replace(_CALL_DEMAND_QUEUED_CARD,_CALL_DEMAND_SUMMARY_CARDS,1)
+    updated = updated.replace(_CALL_DEMAND_ABANDONED_CARD,_CALL_DEMAND_ABANDONED_WITH_OUTBOUND,1)
+    updated = updated.replace(_CALL_DEMAND_PANEL_TITLE,_CALL_DEMAND_PANEL_TITLE_UPDATED,1)
 
     if "id=\"nonQueuedKpi\"" in updated and _CALL_DEMAND_SUMMARY_SYNC not in updated:
-        updated = updated.replace(
-            "</body>",
-            _CALL_DEMAND_SUMMARY_SYNC + "\n</body>",
-            1,
-        )
-
+        updated = updated.replace("</body>",_CALL_DEMAND_SUMMARY_SYNC+"\n</body>",1)
     return updated
 
 
 async def _fix_call_demand_queue_filter(response):
-    """Apply Call Demand queue-filter and summary presentation fixes."""
+    """Apply Call Demand queue-filter and customer-facing KPI organization."""
     return await _rewrite_html_response(response, _transform_call_demand)
 
 
@@ -188,18 +242,13 @@ class WebexAuthMiddleware(BaseHTTPMiddleware):
 
         path = request.url.path
 
-        if path in PUBLIC_EXACT or any(
-            path.startswith(prefix) for prefix in PUBLIC_PREFIXES
-        ):
+        if path in PUBLIC_EXACT or any(path.startswith(prefix) for prefix in PUBLIC_PREFIXES):
             return await call_next(request)
 
         if not settings.configured:
             if path.startswith("/api/"):
                 return JSONResponse(
-                    {
-                        "detail": "Webex authentication setup is incomplete.",
-                        "missing": settings.missing_required_settings,
-                    },
+                    {"detail": "Webex authentication setup is incomplete.","missing": settings.missing_required_settings},
                     status_code=503,
                 )
             return RedirectResponse("/auth/setup-required", status_code=302)
@@ -214,10 +263,7 @@ class WebexAuthMiddleware(BaseHTTPMiddleware):
             return response
 
         if path.startswith("/api/"):
-            return JSONResponse(
-                {"detail": "Authentication required."},
-                status_code=401,
-            )
+            return JSONResponse({"detail": "Authentication required."},status_code=401)
 
         next_path = path
         if request.url.query:
