@@ -1,3 +1,6 @@
+import random
+import time
+
 import httpx
 
 from .queries import (TASK_QUERY, TASK_DETAILS_QUERY, TASK_LEG_DETAILS_QUERY, AGENT_SESSION_QUERY, AGENT_ACTIVITY_PAGE_QUERY)
@@ -29,6 +32,26 @@ class WxccClient:
                 json=payload,
             )
 
+    @staticmethod
+    def _retry_delay_seconds(resp: httpx.Response, attempt: int) -> float:
+        """
+        Choose a conservative delay for WxCC HTTP 429 responses.
+
+        Prefer Retry-After when Cisco supplies it. Otherwise use exponential
+        backoff with small jitter so concurrent Render jobs do not retry at the
+        exact same instant.
+        """
+        retry_after = resp.headers.get("Retry-After")
+        if retry_after:
+            try:
+                return max(float(retry_after), 1.0)
+            except (TypeError, ValueError):
+                pass
+
+        # 5, 10, 20, 40, 60 seconds (plus jitter), capped at 60 seconds.
+        base = min(5 * (2 ** attempt), 60)
+        return base + random.uniform(0.25, 1.25)
+
     def _search(
         self,
         query: str,
@@ -48,19 +71,44 @@ class WxccClient:
             "variables": variables,
         }
 
-        resp = self._do_search(payload)
+        max_rate_limit_retries = 5
+        rate_limit_attempt = 0
+        refreshed_auth = False
 
-        # One retry after forced refresh for auth failures.
-        if resp.status_code in (401, 403) and token_manager.has_refresh_credentials():
-            resp = self._do_search(payload, force_refresh=True)
+        while True:
+            resp = self._do_search(payload, force_refresh=refreshed_auth)
 
-        if resp.status_code >= 400:
-            raise WxccError(f"WxCC HTTP {resp.status_code}: {resp.text}")
+            # One retry after forced refresh for auth failures.
+            if (
+                resp.status_code in (401, 403)
+                and not refreshed_auth
+                and token_manager.has_refresh_credentials()
+            ):
+                refreshed_auth = True
+                continue
 
-        body = resp.json()
-        if body.get("error") or body.get("errors"):
-            raise WxccError(f"WxCC GraphQL error: {body}")
-        return body
+            # WxCC Search can intermittently return 429 when task, taskDetails,
+            # taskLegDetails and agentSession calls are made close together.
+            # Do not fail the entire collector immediately; honor Retry-After
+            # or back off exponentially and retry the same request.
+            if resp.status_code == 429 and rate_limit_attempt < max_rate_limit_retries:
+                delay = self._retry_delay_seconds(resp, rate_limit_attempt)
+                print(
+                    "WxCC rate limit hit (HTTP 429). "
+                    f"Retrying in {delay:.1f}s "
+                    f"({rate_limit_attempt + 1}/{max_rate_limit_retries})..."
+                )
+                time.sleep(delay)
+                rate_limit_attempt += 1
+                continue
+
+            if resp.status_code >= 400:
+                raise WxccError(f"WxCC HTTP {resp.status_code}: {resp.text}")
+
+            body = resp.json()
+            if body.get("error") or body.get("errors"):
+                raise WxccError(f"WxCC GraphQL error: {body}")
+            return body
 
     def get_tasks(self, from_ms: int, to_ms: int) -> list[dict]:
         body = self._search(TASK_QUERY, from_ms, to_ms)
