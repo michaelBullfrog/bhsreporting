@@ -32,6 +32,15 @@ _CALL_DEMAND_FIXED_URL_SNIPPET = (
     "function url(){const p=new URLSearchParams();const f=localStart($('fromDate').value),t=localAfter($('toDate').value);if(f!==null)p.set('from_ms',f);if(t!==null)p.set('to_ms',t);p.set('timezone',Intl.DateTimeFormat().resolvedOptions().timeZone||'America/Detroit');const qf=$('queueFilter')?.value;if(qf)p.set('queue_name',qf);return '/api/dashboard/call-demand?'+p.toString()}"
 )
 
+_EXECUTIVE_BROKEN_URL_SNIPPET = (
+    "    const qf=$('queueFilter')?.value;if(qf)p.set('queue_name',qf);\n"
+    "function apiUrl(){const p=new URLSearchParams(),f=localStart($('fromDate').value),t=localAfter($('toDate').value);if(f!==null)p.set('from_ms',f);if(t!==null)p.set('to_ms',t);p.set('timezone',Intl.DateTimeFormat().resolvedOptions().timeZone||'America/Detroit');return '/api/dashboard/executive-overview?'+p.toString()}"
+)
+
+_EXECUTIVE_FIXED_URL_SNIPPET = (
+    "function apiUrl(){const p=new URLSearchParams(),f=localStart($('fromDate').value),t=localAfter($('toDate').value);if(f!==null)p.set('from_ms',f);if(t!==null)p.set('to_ms',t);p.set('timezone',Intl.DateTimeFormat().resolvedOptions().timeZone||'America/Detroit');const qf=$('queueFilter')?.value;if(qf)p.set('queue_name',qf);return '/api/dashboard/executive-overview?'+p.toString()}"
+)
+
 _CALL_DEMAND_QUEUED_CARD = (
     '<div class="kpi"><div class="kpi-label">Queued Inbound</div>'
     '<div class="kpi-value" id="queued">—</div>'
@@ -226,9 +235,23 @@ def _transform_call_demand(text: str) -> str:
     return updated
 
 
+def _transform_executive(text: str) -> str:
+    """Ensure Executive Overview includes the selected queue in its API request."""
+    return text.replace(
+        _EXECUTIVE_BROKEN_URL_SNIPPET,
+        _EXECUTIVE_FIXED_URL_SNIPPET,
+        1,
+    )
+
+
 async def _fix_call_demand_queue_filter(response):
     """Apply Call Demand queue-filter and customer-facing KPI organization."""
     return await _rewrite_html_response(response, _transform_call_demand)
+
+
+async def _fix_executive_queue_filter(response):
+    """Fix Executive Overview queue filtering."""
+    return await _rewrite_html_response(response, _transform_executive)
 
 
 class WebexAuthMiddleware(BaseHTTPMiddleware):
@@ -258,6 +281,8 @@ class WebexAuthMiddleware(BaseHTTPMiddleware):
                 response = await _remove_staffing_queue_filter(response)
             elif path == "/call-demand":
                 response = await _fix_call_demand_queue_filter(response)
+            elif path == "/executive-overview":
+                response = await _fix_executive_queue_filter(response)
             return response
 
         if path.startswith("/api/"):
