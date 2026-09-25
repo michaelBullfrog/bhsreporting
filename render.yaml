@@ -21,6 +21,8 @@ services:
         sync: false
       - key: WXCC_TOKEN_URL
         value: https://webexapis.com/v1/access_token
+      - key: WEBEX_AUTH_REDIRECT_URI
+        value: https://bhsreporting.bullfrog.net/auth/webex/callback
 
   - type: cron
     name: wxcc-analytics-collector
