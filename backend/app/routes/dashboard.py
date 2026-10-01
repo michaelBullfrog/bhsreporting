@@ -7,6 +7,37 @@ from ..models import Interaction, InteractionLeg
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 
 
+class _DurationFilteredSession:
+    """
+    Lightweight Session proxy used by Executive and Call Demand.
+
+    When quick calls are excluded, every metrics query that requests the
+    Interaction model automatically receives a >= 10 second total-duration
+    filter. Queries for legs, agent sessions, state activity, and other models
+    pass through unchanged.
+    """
+
+    def __init__(self, db: Session, minimum_duration_ms: int):
+        self._db = db
+        self._minimum_duration_ms = minimum_duration_ms
+
+    def query(self, *entities, **kwargs):
+        query = self._db.query(*entities, **kwargs)
+        if Interaction in entities:
+            query = query.filter(
+                Interaction.total_duration.isnot(None),
+                Interaction.total_duration >= self._minimum_duration_ms,
+            )
+        return query
+
+    def __getattr__(self, name):
+        return getattr(self._db, name)
+
+
+def _metrics_db(db: Session, include_quick_calls: bool):
+    return db if include_quick_calls else _DurationFilteredSession(db, 10_000)
+
+
 def _abandonment_definition() -> str:
     return (
         "BHS reporting policy: a queued inbound interaction is Answered when "
@@ -189,16 +220,22 @@ def get_executive_overview(
     to_ms: int | None = Query(None),
     timezone_name: str = Query("America/Detroit", alias="timezone"),
     queue_name: str | None = Query(None),
+    include_quick_calls: bool = Query(True),
     db: Session = Depends(get_db),
 ):
     result = executive_overview_summary(
-        db,
+        _metrics_db(db, include_quick_calls),
         from_ms=from_ms,
         to_ms=to_ms,
         timezone_name=timezone_name,
         queue_name=queue_name,
     )
     result = _apply_executive_policy(result)
+    result["quick_calls"] = {
+        "included": include_quick_calls,
+        "threshold_seconds": 10,
+        "definition": "Quick call = task-level total_duration under 10 seconds",
+    }
     result["backend_version"] = BACKEND_VERSION
     return result
 
@@ -272,28 +309,34 @@ def get_call_demand(
     to_ms: int | None = Query(None),
     timezone_name: str = Query("America/Detroit", alias="timezone"),
     queue_name: str | None = Query(None),
+    include_quick_calls: bool = Query(True),
     db: Session = Depends(get_db),
 ):
     result = call_demand_summary(
-        db,
+        _metrics_db(db, include_quick_calls),
         from_ms=from_ms,
         to_ms=to_ms,
         timezone_name=timezone_name,
         queue_name=queue_name,
     )
     result = _apply_call_demand_policy(result)
+    result["quick_calls"] = {
+        "included": include_quick_calls,
+        "threshold_seconds": 10,
+        "definition": "Quick call = task-level total_duration under 10 seconds",
+    }
     result["backend_version"] = BACKEND_VERSION
     return result
 
 
-BACKEND_VERSION = "9.3.0"
+BACKEND_VERSION = "9.4.0"
 
 
 @router.get("/version")
 def get_version():
     return {
         "backend_version": BACKEND_VERSION,
-        "staffing_route": "v9.3.0-bhs-queued-unanswered-abandonment-policy",
+        "staffing_route": "v9.4.0-quick-call-statistical-toggle",
     }
 
 
