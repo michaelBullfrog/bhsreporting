@@ -41,6 +41,23 @@ _EXECUTIVE_FIXED_URL_SNIPPET = (
     "function apiUrl(){const p=new URLSearchParams(),f=localStart($('fromDate').value),t=localAfter($('toDate').value);if(f!==null)p.set('from_ms',f);if(t!==null)p.set('to_ms',t);p.set('timezone',Intl.DateTimeFormat().resolvedOptions().timeZone||'America/Detroit');const qf=$('queueFilter')?.value;if(qf)p.set('queue_name',qf);return '/api/dashboard/executive-overview?'+p.toString()}"
 )
 
+_MISSED_CALLBACKS_MASKED_PHONE = r"""function phone(v){
+  const d=String(v||'').replace(/\D/g,'');
+  const x=d.length>10?d.slice(-10):d;
+  if(x.length!==10)return v||'—';
+  return `(***) ***-${x.slice(-4)}`;
+}"""
+
+_MISSED_CALLBACKS_FULL_PHONE = r"""function phone(v){
+  const raw=String(v||'').trim();
+  if(!raw)return '—';
+  const d=raw.replace(/\D/g,'');
+  const x=d.length===11&&d.startsWith('1')?d.slice(1):d;
+  if(x.length===10)return `(${x.slice(0,3)}) ${x.slice(3,6)}-${x.slice(6)}`;
+  if(d.length===11&&d.startsWith('1'))return `+1 (${d.slice(1,4)}) ${d.slice(4,7)}-${d.slice(7)}`;
+  return raw;
+}"""
+
 _CALL_DEMAND_QUEUED_CARD = (
     '<div class="kpi"><div class="kpi-label">Queued Inbound</div>'
     '<div class="kpi-value" id="queued">—</div>'
@@ -244,6 +261,15 @@ def _transform_executive(text: str) -> str:
     )
 
 
+def _transform_missed_callbacks(text: str) -> str:
+    """Show the full caller number instead of masking it on callback tables."""
+    return text.replace(
+        _MISSED_CALLBACKS_MASKED_PHONE,
+        _MISSED_CALLBACKS_FULL_PHONE,
+        1,
+    )
+
+
 async def _fix_call_demand_queue_filter(response):
     """Apply Call Demand queue-filter and customer-facing KPI organization."""
     return await _rewrite_html_response(response, _transform_call_demand)
@@ -252,6 +278,11 @@ async def _fix_call_demand_queue_filter(response):
 async def _fix_executive_queue_filter(response):
     """Fix Executive Overview queue filtering."""
     return await _rewrite_html_response(response, _transform_executive)
+
+
+async def _show_full_callback_numbers(response):
+    """Show full caller numbers on Missed & Callbacks."""
+    return await _rewrite_html_response(response, _transform_missed_callbacks)
 
 
 class WebexAuthMiddleware(BaseHTTPMiddleware):
@@ -283,6 +314,8 @@ class WebexAuthMiddleware(BaseHTTPMiddleware):
                 response = await _fix_call_demand_queue_filter(response)
             elif path == "/executive-overview":
                 response = await _fix_executive_queue_filter(response)
+            elif path == "/missed-callbacks":
+                response = await _show_full_callback_numbers(response)
             return response
 
         if path.startswith("/api/"):
